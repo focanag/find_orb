@@ -80,9 +80,11 @@ static double simplex_scoring( void *icontext, const double *ivect)
 
    if( context->n_params == 2)
       {
-      herget_method( context->obs, context->n_obs, ivect[0], ivect[1],
-                           context->orbit, NULL, NULL, NULL);
-      adjust_herget_results( context->obs, context->n_obs, context->orbit);
+      if( herget_method( context->obs, context->n_obs, ivect[0], ivect[1],
+                           context->orbit, NULL, NULL, NULL))
+         return( 1e+30);
+      if( adjust_herget_results( context->obs, context->n_obs, context->orbit))
+         return( 1e+30);
       }
    else
       {
@@ -236,7 +238,10 @@ static STORED_ORBIT
    double epoch;
    double orbit[MAX_N_PARAMS];
    int n_orbit_params, force_model;
+   unsigned perturbers;
    } *stored = NULL;
+
+extern unsigned perturbers;
 
 void push_orbit( const double epoch, const double *orbit)
 {
@@ -250,6 +255,7 @@ void push_orbit( const double epoch, const double *orbit)
       memcpy( head->orbit, orbit, n_orbit_params * sizeof( double));
       head->n_orbit_params = n_orbit_params;
       head->force_model = force_model;
+      head->perturbers = perturbers;
       stored = head;
       }
 }
@@ -267,6 +273,7 @@ int pop_orbit( double *epoch, double *orbit)
          *epoch = stored->epoch;
          n_orbit_params = stored->n_orbit_params;
          force_model = stored->force_model;
+         perturbers = stored->perturbers;
          memcpy( orbit, stored->orbit, n_orbit_params * sizeof( double));
          available_sigmas = NO_SIGMAS_AVAILABLE;
          }
@@ -523,9 +530,10 @@ https://en.wikipedia.org/wiki/Error_function#Approximation_with_elementary_funct
 
    As described at the second link,  this has maximum error of 1.5x10^-7.
 (Which isn't a problem here,  but some caution would be appropriate.)
-It's only used in early MSVCs which lack erf(),  and in OpenWATCOM.  */
+This is for older compilers lacking the C99 or C++11 standard erf(),
+such as OpenWATCOM and some early MSVCs.  */
 
-#if defined( _MSC_VER) && (_MSC_VER < 1800) || defined( __WATCOMC__)
+#if( __cplusplus < 201103L)
 double erf( double x)
 {
     const double a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
@@ -723,7 +731,7 @@ double improve_along_lov( double *orbit, const double epoch, const double *lov,
    assert( x);
    score = x + n_divs;
    for( i = 0; i < n_obs; i++)
-      if( obs[i].is_included)
+      if( obs[i].is_included && obs[i].note2 != 'R')
          {
          double sigma = hypot( obs[i].posn_sigma_1, obs[i].posn_sigma_2)
                                  * 180. * 3600. / PI;
@@ -794,7 +802,7 @@ double generate_mc_variant_from_covariance( double *var_orbit,
    double rval = 0.;
 
    assert( eigenvects);
-   memcpy( var_orbit, orbit, 6 * sizeof( double));
+   memcpy( var_orbit, orbit, n_orbit_params * sizeof( double));
    for( i = 0; i < n_orbit_params; i++)
       {
       const double g_rand = gaussian_random( );
@@ -805,9 +813,6 @@ double generate_mc_variant_from_covariance( double *var_orbit,
       }
    return( rval);
 }
-
-int text_search_and_replace( char FAR *str, const char *oldstr,
-                                     const char *newstr);   /* ephem0.cpp */
 
 const char *excluded_filename = "excluded.txt";
 
@@ -847,7 +852,7 @@ int write_excluded_observations_file( const OBSERVE *obs, int n_obs)
             char time_buff[80];
 
             full_ctime( time_buff, current_jd( ), FULL_CTIME_YMD);
-            fprintf( ofile, "# %s Banned obs file written %s\n",
+            fprintf( ofile, "# %s Banned obs file written %s UTC\n",
                            reduced_desig, time_buff);
             }
          n_excluded++;
@@ -861,7 +866,8 @@ int write_excluded_observations_file( const OBSERVE *obs, int n_obs)
    return( n_excluded);
 }
 
-double automatic_outlier_rejection_limit = 3.;
+double automatic_outlier_rejection_limit;
+double default_automatic_outlier_rejection_limit = 3.;
 
 int apply_excluded_observations_file( OBSERVE *obs, const int n_obs)
 {
@@ -869,7 +875,7 @@ int apply_excluded_observations_file( OBSERVE *obs, const int n_obs)
    FILE *ifile;
    int n_excluded = 0, i;
 
-   automatic_outlier_rejection_limit = 3.;
+   automatic_outlier_rejection_limit = default_automatic_outlier_rejection_limit;
    ifile = fopen_ext( excluded_filename, "crb");
    if( ifile)
       {

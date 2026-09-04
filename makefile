@@ -61,8 +61,10 @@ ifdef MSWIN
 	EXE=.exe
 	CURSES_LIB=-lpdcurses
 	MKDIR=-mkdir
+	DEFAULT_PREFIX=..
 else
 	MKDIR=mkdir -p
+	DEFAULT_PREFIX=~
 endif
 
 # You can have your include files in ~/include and libraries in
@@ -70,14 +72,14 @@ endif
 # (with root privileges) you can install them to /usr/local/include
 # and /usr/local/lib for all to enjoy.
 
-PREFIX?=~
+PREFIX?=$(DEFAULT_PREFIX)
 ifdef GLOBAL
 	INSTALL_DIR=/usr/local
 else
 	INSTALL_DIR=$(PREFIX)
 endif
-ifneq ($(PREFIX),~)
-	# enable the automatic setup of ~/.find_orb dir from
+ifneq ($(PREFIX),$(DEFAULT_PREFIX))
+	# enable the automatic setup of ../.find_orb dir from
 	# $PREFIX/share/openorb.  This at the moment requires C++17 features
 	# and works on Linux and macOS
 	CXXFLAGS+=-DCONFIG_DIR_AUTOCOPY=1 -std=c++17
@@ -85,12 +87,17 @@ endif
 
 ifdef X
 	CURSES_FLAGS=-DXCURSES -I../PDCursesMod
-	CURSES_LIB=-lXCurses -lXaw -lXmu -lXt -lX11 -lSM -lICE -lXext -lXpm
+	CURSES_LIB=$(HOME)/PDCursesMod/x11new/libpdcurses.a -lX11 -lpthread
 endif
 
 ifdef VT
 	CURSES_FLAGS=-DVT -I$(HOME)/PDCursesMod
 	CURSES_LIB=-lpdcurses
+endif
+
+ifdef DRM
+	CURSES_FLAGS=-DVT -I$(HOME)/PDCursesMod
+	CURSES_LIB=$(HOME)/PDCursesMod/fb/libpdcurses.a -ldrm
 endif
 
 LIB_DIR=$(INSTALL_DIR)/lib
@@ -127,18 +134,26 @@ endif
 
 all: $(FO_EXE) $(FIND_ORB_EXE) fo_serve.cgi eph2tle$(EXE)
 
-CXXFLAGS+=-c -Wall -pedantic -Wextra -Werror $(ADDED_CXXFLAGS) -I $(INSTALL_DIR)/include
+CXXFLAGS+=-c -Wall -pedantic -Wextra $(ADDED_CXXFLAGS) -I $(INSTALL_DIR)/include
+
+ifndef NO_ERRORS
+	CXXFLAGS += -Werror
+endif
+
+ifdef UCHAR
+	CXXFLAGS += -funsigned-char
+endif
 
 ifdef DEBUG
-	CXXFLAGS += -g -O0
+	CXXFLAGS += -g -Og
 else
 	CXXFLAGS += -O3
 endif
 
-OBJS=ades_out.o b32_eph.o bc405.o bias.o collide.o conv_ele.o details.o eigen.o \
+OBJS=ades_out.o bc405.o bias.o collide.o conv_ele.o details.o eigen.o \
 	elem2tle.o elem_out.o elem_ou2.o ephem0.o errors.o expcalc.o gauss.o \
-	geo_pot.o healpix.o lsquare.o miscell.o         monte0.o \
-	mpc_obs.o nanosecs.o orb_func.o orb_fun2.o pl_cache.o roots.o  \
+	geo_pot.o healpix.o lsquare.o miscell.o monte0.o \
+	mpc_obs.o orb_func.o orb_fun2.o pl_cache.o roots.o  \
 	runge.o shellsor.o sigma.o simplex.o sm_vsop.o sr.o stackall.o
 
 miscell.o: prefix.h
@@ -190,40 +205,46 @@ findorb.o:         findorb.cpp
 clipfunc.o:        clipfunc.cpp
 	$(CXX) $(CXXFLAGS) $(CURSES_FLAGS) $<
 
-getstrex.o:        getstrex.c
-	$(CC) $(CXXFLAGS) $(CURSES_FLAGS) $<
+getstrex.o:        getstrex.cpp
+	$(CXX) $(CXXFLAGS) $(CURSES_FLAGS) $<
 
-$(FO_EXE):          fo.o $(OBJS) $(RES_FILENAME)
+$(FO_EXE):           fo.o $(OBJS) $(RES_FILENAME)
 	$(CXX) -o $(FO_EXE) fo.o $(OBJS) $(LIBS) $(RES_FILENAME) $(LDFLAGS)
 
 eph2tle$(EXE):          eph2tle.o conv_ele.o elem2tle.o simplex.o lsquare.o
 	$(CXX) -o eph2tle$(EXE) eph2tle.o conv_ele.o elem2tle.o simplex.o lsquare.o $(LIBS)
 
-cssfield$(EXE):          cssfield.o
+cssfield$(EXE):           cssfield.o
 	$(CXX) -o cssfield$(EXE) cssfield.o $(LIBS)
 
 expcalc$(EXE):          expcalc.cpp
 	$(CXX) -o expcalc$(EXE) -Wall -Wextra -pedantic -DTEST_CODE expcalc.cpp
 
-roottest$(EXE):          roottest.o
+geo_max$(EXE):           geo_max.o geo_pot.o
+	$(CXX) -o geo_max$(EXE) geo_max.o geo_pot.o
+
+geo_test$(EXE):           geo_test.o geo_pot.o
+	$(CXX) -o geo_test$(EXE) geo_test.o geo_pot.o
+
+roottest$(EXE):           roottest.o roots.o
 	$(CXX) -o roottest$(EXE) roottest.o roots.o
 
-neat_xvt$(EXE):          neat_xvt.o
+neat_xvt$(EXE):           neat_xvt.o
 	$(CXX) -o neat_xvt$(EXE) neat_xvt.o
 
-fo_serve.cgi:          fo_serve.o $(OBJS)
+fo_serve.cgi:           fo_serve.o $(OBJS)
 	$(CXX) -o fo_serve.cgi fo_serve.o $(OBJS) $(LIBS)
 
-cvt_elem.cgi:	         cvt_elem.o
+cvt_elem.cgi:	          cvt_elem.o
 	$(CXX) -o cvt_elem.cgi cvt_elem.o $(LIBS)
 
-cvt_elem.o:         conv_ele.cpp
+cvt_elem.o:            conv_ele.cpp
 	$(CXX) $(CXXFLAGS) -o cvt_elem.o -DCGI_VERSION $<
 
 IDIR=$(PREFIX)/share/findorb/data
-ifeq ($(PREFIX),~)
+ifeq ($(PREFIX),$(DEFAULT_PREFIX))
 	# backwards compatibility
-	IDIR=~/.find_orb
+	IDIR=../.find_orb
 endif
 
 clean:
@@ -231,6 +252,7 @@ clean:
 	$(RM) fo_serve.cgi eph2tle.o eph2tle$(EXE) cssfield$(EXE)
 	$(RM) $(FIND_ORB_OBJS) cssfield.o neat_xvt.o neat_xvt$(EXE)
 	$(RM) prefix.h PREFIX
+	$(RM) geo_test.o geo_test geo_max.o geo_max
 ifdef RES_FILENAME
 	$(RM) $(RES_FILENAME)
 
@@ -239,10 +261,12 @@ $(RES_FILENAME): find_orb.ico find_orb.rc
 endif
 
 clean_temp:
+	$(RM) $(IDIR)/alt_eph.txt
 	$(RM) $(IDIR)/artsat.json
 	$(RM) $(IDIR)/bc405pre.txt
 	$(RM) $(IDIR)/cmt_sof.txt
 	$(RM) $(IDIR)/combined.json
+	$(RM) $(IDIR)/comments.txt
 	$(RM) $(IDIR)/covar.txt
 	$(RM) $(IDIR)/covar.json
 	$(RM) $(IDIR)/covar?.txt
@@ -257,7 +281,6 @@ clean_temp:
 	$(RM) $(IDIR)/elem_short.json
 	$(RM) $(IDIR)/ephemeri.txt
 	$(RM) $(IDIR)/ephemeri.json
-	$(RM) $(IDIR)/eph_json.txt
 	$(RM) $(IDIR)/gauss.out
 	$(RM) $(IDIR)/guide.txt
 	$(RM) $(IDIR)/guide?.txt
@@ -292,9 +315,9 @@ INSTALL_FILES= \
    bright.pgm bright2.pgm calendar.txt cometdef.sof command.txt cospar.txt \
    details.txt dosephem.txt dos_help.txt elem_pop.txt environ.def \
    eph2tle.txt eph_expl.txt eph_type.txt ?findorb.txt frame_he.txt \
-   geo_rect.txt header.htm jpl_eph.txt link_def.json mpc_area.txt \
+   geo_rect.txt header.htm hints.def jpl_eph.txt link_def.json mpc_area.txt \
    mpcorb.hdr mu1.txt nongravs.txt obj_help.txt obj_name.txt \
-   ObsCodes.htm ObsCodesF.html observer.txt obslinks.htm  \
+   ObsCodes.htm ObsCodesF.html observer.htm obslinks.htm  \
    odd_name.txt openfile.txt orbitdef.sof previous.def progcode.txt \
    radecfmt.txt residfmt.txt rovers.txt sat_xref.txt scope.json \
    scopes.txt splash.txt sigma.txt site_310.txt timehelp.txt xdesig.txt
@@ -310,7 +333,6 @@ else
 
 endif
 	$(CP) $(INSTALL_FILES) $(IDIR)
-	$(CP) -n hints.txt $(IDIR)
 
 uninstall:
 ifdef EXE

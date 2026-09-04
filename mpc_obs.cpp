@@ -32,7 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <windows.h>
 #endif
 #include <stdarg.h>
-#include <assert.h>
+#include "assert2.h"
 #include <errno.h>
 #include "watdefs.h"
 #include "details.h"
@@ -48,12 +48,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include "pl_cache.h"
 #include "constant.h"
 
+int pattern_match(const char* pattern, const char* string);   /* miscell.c */
 double utc_from_td( const double jdt, double *delta_t);     /* ephem0.cpp */
 int apply_excluded_observations_file( OBSERVE *obs, const int n_obs);
 void set_up_observation( OBSERVE FAR *obs);                 /* mpc_obs.c */
 static double observation_jd( const char *buff);
 double centralize_ang( double ang);             /* elem_out.cpp */
-int sort_obs_by_date_and_remove_duplicates( OBSERVE *obs, const int n_obs);
 char *fgets_trimmed( char *buff, size_t max_bytes, FILE *ifile); /*elem_out.c*/
 int lat_alt_to_parallax( const double lat, const double ht_in_meters,
              double *rho_cos_phi, double *rho_sin_phi, const int planet_idx);
@@ -74,18 +74,25 @@ int get_satellite_offset( const char *iline, double *xyz);  /* mpc_obs.cpp */
 int get_residual_data( const OBSERVE *obs, double *xresid, double *yresid);
 bool nighttime_only( const char *mpc_code);                 /* mpc_obs.cpp */
 char *find_numbered_mp_info( const int number);             /* mpc_obs.cpp */
+bool is_sungrazing_comet( const OBSERVE *obs, const int n_obs);  /* orb_func.c */
 static int xref_designation( char *desig);
 int debug_printf( const char *format, ...)                 /* mpc_obs.cpp */
 #ifdef __GNUC__
          __attribute__ (( format( printf, 1, 2)))
 #endif
 ;
+char *make_config_dir_name( char *oname, const char *iname);  /* miscell.cpp */
+int download_a_file( const char *ofilename, const char *url);
+const char *get_environment_ptr( const char *env_ptr);     /* mpc_obs.cpp */
+void set_environment_ptr( const char *env_ptr, const char *new_value);
 char **load_file_into_memory( const char *filename, size_t *n_lines,
                         const bool fail_if_not_found);      /* mpc_obs.cpp */
 void shellsort_r( void *base, const size_t n_elements, const size_t esize,
          int (*compare)(const void *, const void *, void *), void *context);
+void *bsearch_ext( const void *key, const void *base0,
+      size_t nmemb, const size_t size,                   /* shellsor.cpp */
+      int (*compar)(const void *, const void *), bool *found);
 int string_compare_for_sort( const void *a, const void *b, void *context);
-const char *get_find_orb_text( const int index);      /* elem_out.cpp */
 static void reduce_designation( char *desig, const char *idesig);
 int set_tholen_style_sigmas( OBSERVE *obs, const char *buff);  /* mpc_obs.c */
 FILE *fopen_ext( const char *filename, const char *permits);   /* miscell.cpp */
@@ -102,16 +109,20 @@ void compute_error_ellipse_adjusted_for_motion( double *sigma1, double *sigma2,
                   const MOTION_DETAILS *m);                  /* orb_func.cpp */
 double n_nearby_obs( const OBSERVE FAR *obs, const unsigned n_obs,
           const unsigned idx, const double time_span);       /* orb_func.cpp */
-void convert_ades_sigmas_to_error_ellipse( const double sig_ra,
+int convert_ades_sigmas_to_error_ellipse( const double sig_ra,
          const double sig_dec, const double correl, double *major,
          double *minor, double *angle);                      /* errors.cpp */
+
+#ifndef PATH_MAX
+   #define PATH_MAX 256
+#endif
 
 static void *_ades_ids_stack = NULL;
 
 int debug_printf( const char *format, ...)
 {
    const char *debug_file_name = "debug.txt";
-   FILE *ofile = fopen_ext( debug_file_name, "tca");
+   FILE *ofile = fopen_ext( debug_file_name, "ca");
 
    if( ofile)
       {
@@ -122,7 +133,7 @@ int debug_printf( const char *format, ...)
       if( ftell( ofile) > max_debug_file_size)
          {
          fclose( ofile);
-         ofile = fopen_ext( debug_file_name, "tcw");
+         ofile = fopen_ext( debug_file_name, "cw");
          }
       fprintf( ofile, "%02d:%02d:%02d ",
                ((int)t0 / 3600) % 24, ((int)t0 / 60) % 60, (int)t0 % 60);
@@ -185,13 +196,12 @@ static void remove_html_tags( char *buff)
 }
 
 /* By default,  Find_Orb will ignore observations before 1100 AD or after
-2300 AD.  I've never seen data _nearly_ as far back as that,  and while
-people do test extrapolated observations,  I don't think anybody goes out
-past 2200 AD.  If they do,  both 'fo' and interactive Find_Orb provide
-command line switches to reset the following values.     */
+2300 AD.  This range can be reset at runtime (see the '-r' option in
+findorb.cpp) or as a configuration parameter (see OBSERVATION_DATE_RANGE
+in environ.dat).        */
 
-double minimum_observation_jd = 2122832.5;  /* 1100 Jan 1 */
-double maximum_observation_jd = 2561117.5;  /* 2300 Jan 1 */
+double minimum_observation_jd = 0.;
+double maximum_observation_jd = 0;
 
 static bool is_in_range( const double jd)
 {
@@ -260,7 +270,7 @@ Otherwise,  zero will be returned. */
 #define OBS_FORMAT_WRONG_DESIG_PLACEMENT        2
 #define OBS_FORMAT_INCORRECT                    4
 
-static int fix_up_mpc_observation( char *buff)
+static int fix_up_mpc_observation( char *buff, double *jd)
 {
    size_t len = strlen( buff);
    int rval = 0;
@@ -291,8 +301,15 @@ static int fix_up_mpc_observation( char *buff)
    else
       check_packed_desig_alignment( buff);
    buff[12] = tchar;
-   if( len == 80 && observation_jd( buff))      /* doesn't need fixing */
-      return( rval);
+   if( len == 80)
+      {
+      double temp_jd = observation_jd( buff);
+
+      if( jd)
+         *jd = temp_jd;
+      if( temp_jd)      /* doesn't need fixing */
+         return( rval);
+      }
 
    if( len < 90)     /* avoid buffer overruns */
       {
@@ -392,26 +409,6 @@ static int fix_up_mpc_observation( char *buff)
    return( rval);
 }
 
-
-#ifndef _MSC_VER
-         /* All non-Microsoft builds are for the console */
-   #define CONSOLE
-#endif
-
-#ifdef CONSOLE
-      /* In the console version of Find_Orb,  the following two functions */
-      /* get remapped to Curses functions.  In the non-interactive one,   */
-      /* they're mapped to 'do-nothings'.  See fo.cpp & find_orb.cpp.     */
-   void refresh_console( void);
-   void move_add_nstr( const int col, const int row, const char *msg, const int n_bytes);
-#endif
-
-#ifdef CONSOLE
-#define COLOR_DEFAULT_INQUIRY       9
-int inquire( const char *prompt, char *buff, const int max_len,
-                     const int color);
-#endif
-
 int set_tholen_style_sigmas( OBSERVE *obs, const char *buff)
 {
    const int n_scanned = sscanf( buff, "%lf%lf%lf",
@@ -428,18 +425,9 @@ int set_tholen_style_sigmas( OBSERVE *obs, const char *buff)
 
 int generic_message_box( const char *message, const char *box_type)
 {
-   int rval;
+   int rval, color = (*box_type == '!' ? COLOR_ATTENTION : COLOR_DEFAULT_INQUIRY);
 
-#ifdef CONSOLE
-   INTENTIONALLY_UNUSED_PARAMETER( box_type);
-   rval = inquire( message, NULL, 30, COLOR_DEFAULT_INQUIRY);
-#else
-   int box_flags = MB_YESNO;
-
-   if( !strcmp( box_type, "o"))
-      box_flags = MB_OK;
-   rval = MessageBox( NULL, message, "Find_Orb", box_flags);
-#endif
+   rval = inquire( message, NULL, 30, color);
    debug_printf( "%s", message);
    return( rval);
 }
@@ -494,7 +482,7 @@ static inline int get_lat_lon_from_header( double *lat,
          warning_shown = true;      /* just do this once */
          snprintf_err( tbuff, sizeof( tbuff),   /* see efindorb.txt */
                   get_find_orb_text( 2000), mpc_code);
-         generic_message_box( tbuff, "o");
+         generic_message_box( tbuff, "!");
          }
       else if( !rval)
          {
@@ -541,7 +529,10 @@ static int extract_mpc_station_data( const char *buff, mpc_code_t *cinfo)
              cinfo->lon -= PI + PI;
          }
       else
+         {
          memset( cinfo, 0, sizeof( mpc_code_t));
+         cinfo->planet = rval;
+         }
       }
    return( rval);
 }
@@ -646,18 +637,12 @@ char *mpc_station_name( char *station_data)
    return( station_data + (station_data[4] == '!' ? 47 : 30));
 }
 
-static int mpc_code_cmp( const char *ptr1, const char *ptr2)
+static int mpc_code_cmp( const void *ptr1, const void *ptr2)
 {
-   int rval = memcmp( ptr1, ptr2, 3);
+   const char **p1 = (const char **)ptr1;
+   const char **p2 = (const char **)ptr2;
 
-   if( !rval)
-      {
-      const char c1 = (ptr1[3] == ' ' ? '\0' : ptr1[3]);
-      const char c2 = (ptr2[3] == ' ' ? '\0' : ptr2[3]);
-
-      rval = c1 - c2;
-      }
-   return( rval);
+   return( memcmp( *p1, *p2, 4));
 }
 
 /* The first (247) roving observer retains that code.  If another
@@ -733,7 +718,7 @@ int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo)
    size_t i;
    const char *override_observatory_name = NULL;
    double lat0 = 0., lon0 = 0., alt0 = 0.;
-   char temp_code[4];
+   char temp_code[5];
    const size_t buffsize = 81;
 
    if( !mpc_code)    /* freeing up resources */
@@ -744,13 +729,6 @@ int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo)
       n_stations = 0;
       xref_designation( NULL);
       return( 0);
-      }
-
-   if( strlen( mpc_code) > 6 && mpc_code[3] == '-')
-      {        /* CSS-style extended codes,  such as 807-100 or 807-061a */
-      memcpy( temp_code, mpc_code, 3);
-      temp_code[3] = '\0';
-      mpc_code = temp_code;
       }
 
    if( !n_stations)
@@ -769,6 +747,23 @@ int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo)
                station_data[i] = station_data[i - 1];
             }
       }
+   if( !memcmp( mpc_code, "@90", 3))      /* looking for dynamical point info */
+      {
+      for( i = 1; i < (size_t)n_stations; i++)
+         if( !memcmp( station_data[i] + 41, mpc_code, 5))
+            {
+            strcpy( buff, station_data[i]);
+            return( 0);
+            }
+      assert( 0);          /* should never get here */
+      return( -1);
+      }
+
+   memcpy( temp_code, mpc_code, 4);
+   if( 4 != strlen( mpc_code))
+      temp_code[3] = ' ';
+   temp_code[4] = '\0';
+
    if( !cinfo)   /* attempting to look up an MPC code from the station name */
       {
       int pass;
@@ -778,19 +773,20 @@ int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo)
             if( (!pass && !memcmp( buff, station_data[i] + 30, strlen( buff)))
                      || (pass && strstr( station_data[i] + 30, buff)))
                {
-               strlcpy_err( buff, station_data[i], buffsize);
+               strlcpy( buff, station_data[i], buffsize);
                return( 0);
                }
       return( -1);
       }
+   memset( cinfo, 0, sizeof( mpc_code_t));
+   cinfo->planet = 3;         /* default to geocentric */
 
-
-   if( !get_lat_lon_from_header( &lat0, &lon0, &alt0, mpc_code,
+   if( !get_lat_lon_from_header( &lat0, &lon0, &alt0, temp_code,
                                              &override_observatory_name))
       if( !override_observatory_name)
          override_observatory_name = "Temporary MPC code";
 
-   rover_idx = get_rover_index( mpc_code);
+   rover_idx = get_rover_index( temp_code);
    if( rover_idx >= 0)
       {
       if( rover_idx < n_rovers)
@@ -802,43 +798,13 @@ int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo)
       override_observatory_name = "Roving observer";
       }
 
-   if( strchr( "nsew", tolower( mpc_code[0])))
+   if( !get_lat_lon_info( cinfo, mpc_code))
       {
-      int got_em = 0;
-      size_t j;
-
-      for( i = 0; mpc_code[i]; i++)
-         {
-         const int c = tolower( mpc_code[i]);
-
-         j = i + 1;
-         while( mpc_code[j] == ' ')
-            j++;
-         if( !strncasecmp( mpc_code + i, "alt", 3))
-            alt0 = atof( mpc_code + i + 3);
-         if( isdigit( mpc_code[j]))
-            {
-            if( c == 'n' || c == 's')
-               {
-               lat0 = atof( mpc_code + i + 1);
-               if( c == 's')
-                  lat0 = -lat0;
-               got_em ^= 1;
-               }
-            if( c == 'e' || c == 'w')
-               {
-               lon0 = atof( mpc_code + i + 1);
-               if( c == 'w')
-                  lon0 = -lon0;
-               got_em ^= 2;
-               }
-            }
-         }
-      if( got_em == 3)
-         {
-         mpc_code = "zzzz";
-         override_observatory_name = "User-supplied observer";
-         }
+      mpc_code = "zzzz";
+      lat0 = cinfo->lat * 180. / PI;
+      lon0 = cinfo->lon * 180. / PI;
+      alt0 = cinfo->alt;
+      override_observatory_name = "User-supplied observer";
       }
 
    if( override_observatory_name)
@@ -865,25 +831,39 @@ int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo)
       return( rval);
       }
 
-   if( !curr_station || mpc_code_cmp( curr_station, mpc_code))
+   mpc_code = temp_code;
+   if( !curr_station || mpc_code_cmp( &curr_station, &mpc_code))
       {
-      int step, loc = -1, loc1;
+      char **search = (char **)bsearch_ext( &mpc_code, station_data, n_stations,
+                  sizeof( char *), mpc_code_cmp, NULL);
 
-      curr_station = NULL;
-      for( step = 0x8000; step; step >>= 1)
-         if( (loc1 = loc + step) < n_stations)
-            {
-            const int compare = mpc_code_cmp( station_data[loc1], mpc_code);
-
-            if( compare <= 0)
-               loc = loc1;
-            if( !compare)
-               curr_station = station_data[loc];
-            }
+      curr_station = (search ? *search : NULL);
       }
    if( !curr_station)
       {
+      const char *envar = "UPDATE_OBSCODES_HTML";
+      const double curr_t = current_jd( );
+      double last_t = 0., delay = 0.1;
+
+      sscanf( get_environment_ptr( envar), "%lf %lf", &last_t, &delay);
       debug_printf( "Couldn't find MPC station '%s'\n", mpc_code);
+      debug_printf( "Curr t %f; last t %f; delay %f\n",
+                  curr_t, last_t, delay);
+      if( curr_t > last_t + delay && isalnum( mpc_code[0])
+                                  && isdigit( mpc_code[1]) && isdigit( mpc_code[2]))
+         {
+         char path[PATH_MAX];
+
+         snprintf( path, sizeof( path), "%f %f", curr_t, delay);
+         set_environment_ptr( envar, path);
+         make_config_dir_name( path, "ObsCodes.htm");
+         if( !download_a_file( path,
+                  "http://www.minorplanetcenter.org/iau/lists/ObsCodes.html"))
+            {
+            get_observer_data( NULL, NULL, NULL);
+            return( get_observer_data( mpc_code, buff, cinfo));
+            }
+         }
       if( buff)
          {
          strcpy( buff, blank_line);
@@ -919,94 +899,6 @@ static int get_observer_data_latlon( const char FAR *mpc_code,
    return( rval);
 }
 
-/*   The offset between a satellite observation and the earth or sun    */
-/* is stored in a second line,  as described at                         */
-/* https://www.minorplanetcenter.net/iau/info/SatelliteObs.html         */
-/*    This format allows parallax type '1' in kilometers or type '2'    */
-/* in AU.  If the input file contains the line '#relax_xyz',  Find_Orb  */
-/* is less picky about where decimal points and +/- signs appear.       */
-/* (It used to insist that the field be "filled out" with digits,  but  */
-/* at least some records contain lower precision positions.  Thus far,  */
-/* the ones I've seen still had enough digits to match the precision of */
-/* the instrument,  so I'm letting "short" records slide if they're     */
-/* only lacking three or fewer places.)                                 */
-
-#define SATELL_COORD_BAD_SIGN       -1
-#define SATELL_COORD_BAD_NUMBER     -2
-#define SATELL_COORD_NO_DECIMAL     -3
-
-static bool strict_sat_xyz_format = true;
-
-inline double get_satellite_coordinate( const char *iptr, int *decimal_loc)
-{
-   char tbuff[12];
-   const char sign_byte = *iptr;
-   double rval = 0.;
-
-   memcpy( tbuff, iptr, 11);
-   tbuff[11] = '\0';
-   if( !strict_sat_xyz_format)
-      {
-      rval = atof( tbuff + 1);
-      if( sign_byte == '-')
-         rval = -rval;
-      *decimal_loc = 0;
-      }
-   else if( sign_byte != '+' && sign_byte != '-')
-      *decimal_loc = -1;         /* signal bad sign */
-   else
-      {
-      char *tptr;
-      int n_bytes_read;
-
-      if( sscanf( tbuff + 1, "%lf%n", &rval, &n_bytes_read) != 1
-                     || n_bytes_read < 7)
-         *decimal_loc = -2;
-      else if( (tptr = strchr( tbuff, '.')) == NULL)
-         *decimal_loc = -3;
-      else
-         *decimal_loc = (int)( tptr - tbuff);
-      if( sign_byte == '-')
-         rval = -rval;
-      if( *decimal_loc <= 0)
-         debug_printf( "decimal loc %d: '%s', n_bytes_read %d\n", *decimal_loc,
-                           tbuff, n_bytes_read);
-      }
-   return( rval);
-}
-
-int get_satellite_offset( const char *iline, double *xyz)
-{
-   unsigned i;
-   int error_code = 0, decimal_loc;
-   const int observation_units = (int)iline[32] - '0';
-
-   for( i = 0; i < 3; i++)    /* in case of error,  use 0 offsets */
-      xyz[i] = 0.;
-   iline += 34;      /* this is where the offsets start */
-   for( i = 0; !error_code && i < 3; i++, iline += 12)
-      {
-      xyz[i] = get_satellite_coordinate( iline, &decimal_loc);
-      if( observation_units == 1)         /* offset given in km */
-         {
-         xyz[i] /= AU_IN_KM;
-         if( strict_sat_xyz_format)    /* offset must be < 10 million km */
-            if( decimal_loc < 6 || decimal_loc > 8)
-               error_code = -1;
-         }
-      else if( observation_units == 2)          /* offset in AU */
-         {                         /* offset must be less than 100 AU */
-         if( strict_sat_xyz_format && decimal_loc != 2 && decimal_loc != 3)
-            error_code = -2;
-         }
-      else      /* don't know about this sort of offset */
-         error_code = -3;
-      if( !error_code && xyz[i] == 0.)
-         error_code = -4;
-      }
-   equatorial_to_ecliptic( xyz);
-   return( error_code);
-}
 
 /* Used in part for sanity checks ("is the observed RA/dec above the
    horizon?  Is the sun _below_ the horizon at that time?")  Either
@@ -1026,7 +918,7 @@ static int get_obs_alt_azzes( const OBSERVE FAR *obs, DPT *sun_alt_az,
    int rval = (get_observer_data_latlon( obs->mpc_code, NULL,
                                     &latlon.x, &latlon.y, NULL) != 3);
 
-   if( !memcmp( obs->mpc_code, "500", 3))
+   if( !latlon.x && !latlon.y)
       rval = -1;
    if( !rval)
       {
@@ -1150,7 +1042,7 @@ static void try_adding_comet_name( const char *search, char *name)
                {
                buff[44] = '\0';
                remove_trailing_cr_lf( buff);
-               strcat( name, " ");
+               strcat( name, strchr( name, '/') ? " " : "/");
                strcat( name, buff + slen);
                }
             }
@@ -1182,7 +1074,7 @@ char *find_numbered_mp_info( const int number)
    const int tolerance = 10;        /* try to get within ten lines */
    static int cached_number = -1;
    static char *cached = NULL;
-   char buff[200];
+   char buff[200], *name_text;
    FILE *ifile;
 
    if( !number)
@@ -1196,11 +1088,13 @@ char *find_numbered_mp_info( const int number)
    if( cached_number == -2)      /* haven't got the file */
       return( NULL);
    ifile = fopen_ext( "NumberedMPs.txt", "crb");
-   if( !ifile)
+   if( !ifile || !fgets( buff, sizeof( buff), ifile))
       {
       cached_number = -2;
       return( NULL);
       }
+   name_text = strstr( buff, "Ceres");
+   assert( name_text);
    while( !got_it)
       {
       if( number < tolerance)
@@ -1209,7 +1103,7 @@ char *find_numbered_mp_info( const int number)
          {
          fseek( ifile, loc, SEEK_SET);
          for( i = 0; i < 2; i++)
-            if( !fgets( buff, sizeof( buff), ifile))
+            if( !fgets_trimmed( buff, sizeof( buff), ifile))
                {
                fclose( ifile);
                return( NULL);
@@ -1222,7 +1116,7 @@ char *find_numbered_mp_info( const int number)
       if( curr_no > number - tolerance && curr_no <= number)
          {
          for( i = number - curr_no; i; i--)
-            if( !fgets( buff, 200, ifile))
+            if( !fgets_trimmed( buff, 200, ifile))
                {
                fclose( ifile);
                return( NULL);
@@ -1235,28 +1129,33 @@ char *find_numbered_mp_info( const int number)
    fclose( ifile);
    if( !cached)
       cached = (char *)malloc( 200);
+   if( name_text < buff + 12)       /* old 'NumberedMPs.txt' files put the */
+      {                            /* asteroid names in a different column */
+      memmove( buff + 12, name_text, strlen( name_text) + 1);
+      memset( name_text, ' ', (buff + 12) - name_text);
+      }
    strlcpy_err( cached, buff, 200);
    cached_number = number;
    return( cached);
 }
 
 /* An object with a name such as 1989-013A is probably an artsat,  and
-probably has a NORAD designation,  name,  and other info in 'satcat.txt',
+probably has a NORAD designation,  name,  and other info in 'satcat.html',
 a master list of artsats available at
 
-http://planet4589.org/space/log/satcat.txt
+https://planet4589.org/space/gcat/data/cat/satcat.html
 
    The following code can turn,  for example,  '1966-092A' into
 '1966-092A = NORAD 02501 = Molniya-1'.       */
 
 static bool try_artsat_xdesig( char *name)
 {
-   FILE *ifile = fopen_ext( "satcat.txt", "crb");
+   FILE *ifile = fopen_ext( "satcat.html", "crb");
    bool found_a_match = false;
 
    if( ifile)
       {
-      char tbuff[250];
+      char tbuff[500];
       size_t slen;
       size_t max_out = 80;    /* max len of 'name' will be 80 bytes */
 
@@ -1268,14 +1167,27 @@ static bool try_artsat_xdesig( char *name)
       remove_trailing_cr_lf( name);
       slen = strlen( name);
       if( max_out > slen)
+         {
+         char *name_ptr = NULL, *norad_num_ptr = NULL, *intl_desig_ptr = NULL;
+
+         strcpy( tbuff, "     ");
+         while( memcmp( tbuff, "JCAT ", 5) && fgets( tbuff, sizeof( tbuff), ifile))
+            ;
+         norad_num_ptr = strstr( tbuff, "Satca");
+         assert( norad_num_ptr);
+         intl_desig_ptr = strstr( tbuff, "Piece");
+         assert( intl_desig_ptr);
+         name_ptr = strstr( tbuff, "Name ");
+         assert( name_ptr);
          while( !found_a_match && fgets( tbuff, sizeof( tbuff), ifile))
-            if( !memcmp( tbuff + 8, name, slen) && tbuff[slen + 8] == ' ')
+            if( !memcmp( intl_desig_ptr, name, slen) && intl_desig_ptr[slen] == ' ')
                {
                found_a_match = true;
-               snprintf_append( name, max_out - slen, " = NORAD %.5s = %.31s",
-                        tbuff + 2, tbuff + 23);
+               snprintf_append( name, max_out - slen, " = NORAD %.5s = %.28s",
+                        norad_num_ptr, name_ptr);
                remove_trailing_cr_lf( name);
                }
+         }
       fclose( ifile);
       }
    return( found_a_match);
@@ -1401,7 +1313,7 @@ int get_object_name( char *obuff, const char *packed_desig)
          try_artsat_xdesig( obuff);
       if( rval == OBJ_DESIG_COMET_NUMBERED)
          {
-         snprintf_err( xdesig, sizeof( xdesig), "%3d%c/", atoi( obuff + 2), *obuff);
+         snprintf_err( xdesig, sizeof( xdesig), "%3d%c/", atoi( obuff), xdesig[4]);
          try_adding_comet_name( xdesig, obuff);
          }
       if( rval == OBJ_DESIG_COMET_PROVISIONAL)
@@ -1411,15 +1323,37 @@ int get_object_name( char *obuff, const char *packed_desig)
          }
       if( rval == OBJ_DESIG_ASTEROID_NUMBERED)
          {
-         char *info = find_numbered_mp_info( atoi( obuff + 1));
+         const int number = atoi( obuff + 1);
+         char *info = find_numbered_mp_info( number);
 
+         snprintf_err( obuff, 11, "(%d)", number);
          obuff += strlen( obuff);
          if( info)
             {
-            if( info[9] != ' ')              /* append name */
-               strlcpy( obuff, info + 8, 19);
-            else if( info[29] != ' ')        /* prov ID */
-               strlcpy( obuff, info + 28, 12);
+            if( info[33] != ' ')        /* prov ID */
+               {
+               strlcpy( obuff, " =", 3);
+               strlcpy( obuff + 2, info + 31, 12);
+               remove_trailing_cr_lf( obuff);
+               }
+            if( info[12] != ' ')             /* append name */
+               {
+               FILE *ifile = fopen_ext( "astnames.txt", "crb");
+               int n_read = 0;
+               char buff[200];
+
+               if( ifile)
+                  {
+                  while( fgets( buff, sizeof( buff), ifile) && memcmp( buff, "Ref N", 5))
+                     ;
+                  while( n_read < number && fgets_trimmed( buff, sizeof( buff), ifile))
+                     if( (n_read = atoi( buff + 10)) == number)
+                        strlcpy( obuff + strlen( obuff), buff + 17, 30);
+                  fclose( ifile);
+                  }
+               if( n_read != number)
+                  strlcpy( obuff + strlen( obuff), info + 11, 19);
+               }
             remove_trailing_cr_lf( obuff);
             }
          }
@@ -1439,8 +1373,6 @@ void set_obs_vect( OBSERVE FAR *obs)
    the following code computes that planet's J2000 equatorial coordinates
    using the PS1996 theory (or,  for the moon,  ELP82). */
 
-const char *get_environment_ptr( const char *env_ptr);     /* mpc_obs.cpp */
-void set_environment_ptr( const char *env_ptr, const char *new_value);
 int load_environment_file( const char *filename);          /* mpc_obs.cpp */
 static int load_default_environment_file( void);           /* mpc_obs.cpp */
 void update_environ_dot_dat( void);                        /* mpc_obs.cpp */
@@ -1448,25 +1380,12 @@ void update_environ_dot_dat( void);                        /* mpc_obs.cpp */
 static int earth_lunar_posn_vel( const double jd, double FAR *earth_loc,
                              double FAR *lunar_loc, const int is_vel)
 {
-   double t_earth[3], t_lunar[3];
-   int i;
+   const int vel_offset = (is_vel ? PLANET_POSN_VELOCITY_OFFSET : 0);
 
-   planet_posn( 3 + (is_vel ? PLANET_POSN_VELOCITY_OFFSET : 0), jd, t_earth);
-   planet_posn( 10 + (is_vel ? PLANET_POSN_VELOCITY_OFFSET : 0), jd, t_lunar);
-                     /* earth_loc is the E-M barycenter,  and lunar_loc */
-                     /* is geocentric.  Modify earth_loc to be the earth */
-                     /* geocenter loc,  and lunar_loc to be heliocentric: */
-   for( i = 0; i < 3; i++)
-      {
-      const double earth_moon_barycenter_factor = 82.300679;
-
-      t_earth[i] -= t_lunar[i] / earth_moon_barycenter_factor;
-      t_lunar[i] += t_earth[i];
-      if( earth_loc)
-         earth_loc[i] = t_earth[i];
-      if( lunar_loc)
-         lunar_loc[i] = t_lunar[i];
-      }
+   if( earth_loc)
+      planet_posn( PLANET_POSN_EARTH + vel_offset, jd, earth_loc);
+   if( lunar_loc)
+      planet_posn( PLANET_POSN_MOON  + vel_offset, jd, lunar_loc);
    return( 0);
 }
 
@@ -1491,15 +1410,17 @@ static inline int compute_topocentric_offset( const double ut,
                double *offset, double *vel)
 {
    double precess_matrix[9];
+   const double omega = planet_rotation_rate( planet_no, 0) * PI / 180.;
+                   /* planet rotation rate,  in radians/day */
    int i;
 
+   if( !omega)
+      generic_message_box( "'cospar.txt' not found!", "!");
+   assert( omega);
    calc_planet_orientation( planet_no, 0, ut, precess_matrix);
    spin_matrix( precess_matrix, precess_matrix + 3, lon);
    for( i = 0; i < 3; i++)
       {
-      const double omega = 2. * PI * 360.9856235 / 360.;
-                   /* earth's rotation rate,  in radians/day */
-
       if( offset)
          offset[i] = (rho_cos_phi * precess_matrix[i]
                     + rho_sin_phi * precess_matrix[i + 6]);
@@ -1550,39 +1471,31 @@ static int _compute_lagrange_point( double *vect, const int point_number,
 {
    static double state[6], cached_jde;
    static double multiplier;
-   static int cached_point_number;
+   static int cached_point_number = -1, obj1 = 0, obj2 = 0;
    int i;
 
-   if( cached_point_number != point_number || cached_jde != jde)
+   if( cached_point_number != point_number)
       {
-      int obj1 = (point_number / 10000) % 1000;
-      int obj2 = (point_number / 10) % 1000;
-      const int lpoint = point_number % 10;
-      double state1[6], state2[6];
+      char buff[100], mpc_code[7];
 
-      if( cached_point_number != point_number
-                     && lpoint >= 1 && lpoint <= 3)  /* collinear cases */
-         {
-         char buff[30];
-         const char *multipliers;
-
-         snprintf_err( buff, sizeof( buff), "LAGRANGE_%03d%03d", obj1, obj2);
-         multipliers = get_environment_ptr( buff);
-         if( *multipliers)
-            {
-            double mults[3];
-
-            i = sscanf( multipliers, "%lf,%lf,%lf",
-                        mults, mults + 1, mults + 2);
-            assert( i == 3);
-            multiplier = mults[lpoint - 1];
-            }
-         }
+      snprintf_err( mpc_code, sizeof( mpc_code), "@%d", point_number);
+      get_observer_data( mpc_code, buff, NULL);
+      i = sscanf( buff + 5, "%d %d %lf", &obj1, &obj2, &multiplier);
+      assert( i == 3);
+      assert( obj1 >= 0 && obj1 <= 10);
+      assert( obj2 >= 0 && obj2 <= 10);
       if( obj1 == 3 && obj2 == 10)     /* Earth-Moon case */
          {
          obj1 = PLANET_POSN_EARTH;     /* see 'pl_cache.h' */
          obj2 = PLANET_POSN_MOON;
          }
+      cached_point_number = point_number;
+      }
+   if( cached_jde != jde)
+      {
+      const int lpoint = (point_number - 1) % 5 + 1;
+      double state1[6], state2[6];
+
       planet_posn( obj1, jde, state1);
       planet_posn( obj1 + PLANET_POSN_VELOCITY_OFFSET, jde, state1 + 3);
       planet_posn( obj2, jde, state2);
@@ -1600,7 +1513,6 @@ static int _compute_lagrange_point( double *vect, const int point_number,
          for( i = 0; i < 6; i++)
             state[i] = state1[i] + state2[i];
          }
-      cached_point_number = point_number;
       cached_jde = jde;
       }
    for( i = 0; i < 3; i++)
@@ -1616,7 +1528,7 @@ int compute_observer_loc( const double jde, const int planet_no,
    if( planet_no == -2)
       return( get_canned_object_posn_vel( offset, NULL, jde));
 
-   if( planet_no > 90000000)
+   if( planet_no > 9000)
       _compute_lagrange_point( offset, planet_no, jde, false);
    else if( planet_no != 3 && planet_no != 10)
       planet_posn( planet_no >= 0 ? planet_no : 12, jde, offset);
@@ -1631,6 +1543,7 @@ int compute_observer_loc( const double jde, const int planet_no,
       double geo_offset[3];
       int i;
 
+      assert( planet_no < 9000);
       compute_topocentric_offset( ut, planet_no, rho_cos_phi, rho_sin_phi,
                                         lon, geo_offset, NULL);
       equatorial_to_ecliptic( geo_offset);
@@ -1648,7 +1561,7 @@ int compute_observer_vel( const double jde, const int planet_no,
 
    if( planet_no == -2)    /* spacecraft-based observation */
       return( get_canned_object_posn_vel( NULL, vel, jde));
-   if( planet_no > 90000000)
+   if( planet_no > 9000)
       _compute_lagrange_point( vel, planet_no, jde, true);
    else if( planet_no != 3 && planet_no != 10)
       planet_posn( (planet_no >= 0 ? planet_no : 12) + PLANET_POSN_VELOCITY_OFFSET,
@@ -1678,6 +1591,7 @@ int compute_observer_vel( const double jde, const int planet_no,
 
 static double input_coordinate_epoch = 2000.;
 static double override_time = 0., override_ra = -100., override_dec = -100.;
+static double override_mag = -100.;
       /* 'override_time' allows one to set the observation time with the */
       /* #time keyword (see below) or with certain keywords.  Similarly  */
       /* for override_ra and override_dec,  primarily used for ADES  */
@@ -1746,7 +1660,7 @@ void set_up_observation( OBSERVE FAR *obs)
          else                     /* possible error messages.  */
             text_to_add = 2004;
          strlcat_err( tbuff, get_find_orb_text( text_to_add), sizeof( tbuff));
-         generic_message_box( tbuff, "o");
+         generic_message_box( tbuff, "!");
          comment_observation( obs, "? NoCode");
          obs->is_included = 0;
          obs->flags |= OBS_DONT_USE;
@@ -1794,6 +1708,8 @@ int object_type;
 int find_fcct_biases( const double ra, const double dec, const char catalog,
                  const double jd, double *bias_ra, double *bias_dec);
 
+#define valid_temp_desig_char( c)  (isalnum( c) || '-' == (c) || '_' == (c))
+
 static int parse_observation( OBSERVE FAR *obs, const char *buff)
 {
    unsigned time_format;
@@ -1815,6 +1731,29 @@ static int parse_observation( OBSERVE FAR *obs, const char *buff)
    obs->ref_center = saved_obs.ref_center;
    obs->packed_id[12] = '\0';
    obj_desig_type = get_object_name( NULL, obs->packed_id);
+   if( obj_desig_type == OBJ_DESIG_OTHER)
+      {
+      size_t i = 7;
+
+      while( i < 12 && valid_temp_desig_char( buff[i]))
+         i++;
+      while( i < 12 && buff[i] == ' ')
+         i++;
+      if( i != 12)
+         {
+         static bool warning_not_yet_shown = true;
+
+         if( warning_not_yet_shown)
+            {
+            char tbuff[300];
+
+            warning_not_yet_shown = false;
+            snprintf_err( tbuff, sizeof( tbuff), get_find_orb_text( 2074),
+                        obs->packed_id);
+            generic_message_box( tbuff, "!");
+            }
+         }
+      }
    if( obj_desig_type == OBJ_DESIG_COMET_PROVISIONAL
          || obj_desig_type == OBJ_DESIG_COMET_NUMBERED)
       object_type = OBJECT_TYPE_COMET;
@@ -1837,15 +1776,12 @@ static int parse_observation( OBSERVE FAR *obs, const char *buff)
    obs->note1 = buff[13];
    obs->note2 = buff[14];
    if( is_radar_obs || buff[14] == 's' || buff[14] == 'v')
-      {     /* radar data and "second lines" have no RA/dec: */
-      obs->ra = obs->dec = 0.;
-      obs->flags |= OBS_DONT_USE;
-      }
+      obs->ra = obs->dec = 0.;  /* radar data and "second lines" have no RA/dec */
    else
       {
       const int rval = get_ra_dec_from_mpc_report( buff,
-                  &obs->ra_precision, &obs->ra, &obs->posn_sigma_1,
-                  &obs->dec_precision, &obs->dec, &obs->posn_sigma_2);
+                  &obs->ra_precision, &obs->ra, &obs->posn_sigma_2,
+                  &obs->dec_precision, &obs->dec, &obs->posn_sigma_1);
 
       if( override_ra >= 0.)
          {
@@ -1857,6 +1793,12 @@ static int parse_observation( OBSERVE FAR *obs, const char *buff)
          obs->dec = override_dec * PI / 180.;
          override_dec = -100.;
          }
+#ifdef NOT_CURRENTLY_IN_USE
+      if( obs->ra_precision > 3)    /* indicates ADES format.  In ADES,  trailing */
+         obs->posn_sigma_2 = 0.;    /* zeroes are sometimes omitted.  So we can't */
+      if( obs->dec_precision > 3)   /* use precision as an uncertainty indicator, */
+         obs->posn_sigma_1 = 0.;    /* the way we can with 80-column data.        */
+#endif
       if( rval)
          return( rval);
       }
@@ -1930,7 +1872,16 @@ static int parse_observation( OBSERVE FAR *obs, const char *buff)
       }
    if( isdigit( buff[66]) && obs->note2 != 'R' &&
                (buff[67] == '.' || buff[67] == ' '))
+      {
       obs->obs_mag = atof( buff + 65);
+      if( override_mag >= -95.)
+         {
+         obs->obs_mag = override_mag;
+         override_mag = -100.;
+         }
+      if( obs->mag_band == ' ' && strstr( "249 C49 C50 PSP", obs->mpc_code))
+         obs->mag_band = 'V';   /* Sungrazer obs usually have a blank mag */
+      }                         /* band, but are basically V */
    else
       obs->obs_mag = BLANK_MAG;
    FMEMCPY( obs->reference, buff + 72, 5);
@@ -1942,7 +1893,7 @@ static int parse_observation( OBSERVE FAR *obs, const char *buff)
       {        /* i.e.,  we tried to get FCCT14 debiasing and failed */
       if( !fcct_error_message_shown && apply_debiasing)
          {
-         generic_message_box( get_find_orb_text( 2005), "o");
+         generic_message_box( get_find_orb_text( 2005), "!");
          fcct_error_message_shown = true;   /* see efindorb.txt */
          }
       }
@@ -2296,7 +2247,7 @@ static bool get_neocp_data( char *buff, char *desig, char *mpc_code)
       memcpy( desig, buff, len);
       desig[len] = '\0';
       }
-   else if( strstr( buff, "the geocenter"))
+   else if( !memcmp( buff, "Ephemerides are for the geocenter.", 34))
       {
       static int already_warned = 0;
 
@@ -2304,7 +2255,7 @@ static bool get_neocp_data( char *buff, char *desig, char *mpc_code)
       if( !already_warned)
          {                             /* warn about geocentric ephems */
          already_warned = 1;           /* see 'efindorb.txt' for details */
-         generic_message_box( get_find_orb_text( 2006), "o");
+         generic_message_box( get_find_orb_text( 2006), "!");
          }
       }
    else if( (tptr = strstr( buff, " observatory code ")) != NULL)
@@ -2330,7 +2281,6 @@ static bool get_neocp_data( char *buff, char *desig, char *mpc_code)
          obuff[80] = '\0';
          strcpy( obuff + 5, desig);
          memcpy( obuff + 15, buff, 10);     /* year, month, day */
-//       sprintf( obuff + 25, ".%05d", atoi( buff + 11) * 100000 / 24);
          if( mask == mask_if_hours)     /* ephem step size is in hours */
             minutes = atoi( buff + 11) * 60;
          else                       /* step size was in minutes */
@@ -2363,47 +2313,31 @@ static bool get_neocp_data( char *buff, char *desig, char *mpc_code)
 
 static void inline reformat_rwo_designation_to_mpc( const char *buff, char *obuff)
 {
-   if( !isalpha( buff[6]))           /* numbered object */
-      {
-      const long ast_number = atoi( buff);
-      const long leading_digit = ast_number / 10000L;
+   size_t i = 1;
+   char obj_name[10], packed[13];
 
-      *obuff = int_to_mutant_hex_char( leading_digit);
-      if( !*obuff)      /* mutant hex fails past asteroid 619999 */
-         *obuff = '?';  /* ...just put _something_ there         */
-      sprintf( obuff + 1, "%04ld", ast_number % 10000L);
-      obuff[5] = ' ';
+   assert( ' ' == buff[0]);
+   while( isdigit( buff[i]))
+      i++;
+   assert( i < 10);
+   if( buff[i] == ' ')           /* numbered object */
+      {
+
+      snprintf_err( obj_name, sizeof( obj_name), "(%ld)", atol( buff));
+      create_mpc_packed_desig( packed, obj_name);
+      memcpy( obuff, packed, 6);
       }
    else                       /* provisional designation */
       {
-      obuff[5] = (char)( 'K' + (buff[1] - '2') * 10 + buff[2] - '0');
-                                    /* obuff[5] is century marker */
-      obuff[6] = buff[3];    /* decade */
-      obuff[7] = buff[4];    /* year */
-      obuff[8] = buff[5];    /* first letter */
-      obuff[11] = buff[6];    /* 2nd   letter */
-                  /* A provisional designation is a four-digit year, */
-                  /* plus two letters,  plus either no number,  or a */
-                  /* one, two,  or three-digit number. */
-      if( buff[7] == ' ')              /* No number: say,  '2004RW' */
-         obuff[9] = obuff[10] = '0';
-      else if( buff[8] == ' ')         /* One-digit #: say,  '2004RW1' */
-         {
-         obuff[9] = '0';
-         obuff[10] = buff[7];
-         }
-      else if( buff[9] == ' ')         /* 2-digit #: say,  '2004RW31' */
-         {
-         obuff[9] = buff[7];    /* 1st (tens) digit */
-         obuff[10] = buff[8];    /* 2nd (units) digit */
-         }
-      else                             /* 3-digit #: say,  '2004RW314' */
-         {
-         const int tens = buff[7] * 10 + buff[8] - '0' * 11;
-
-         obuff[9] = int_to_mutant_hex_char( tens);
-         obuff[10] = buff[9];    /* 3rd (units) digit */
-         }
+      assert( 5 == i);
+      assert( isalpha( buff[5]));
+      assert( isalpha( buff[6]));
+      while( buff[i] != ' ')
+         i++;
+      memcpy( obj_name, buff + 1, i - 1);
+      obj_name[i - 1] = '\0';
+      create_mpc_packed_desig( packed, obj_name);
+      memcpy( obuff, packed, 12);
       }
 }
 
@@ -2942,6 +2876,8 @@ static void correct_differences( OBSERVE *obs1, const OBSERVE *obs2)
       obs1->mag_band = obs2->mag_band;
    if( obs1->note1 == ' ' && obs2->note1 != ' ')
       obs1->note1 = obs2->note1;
+   if( obs1->discovery_asterisk == ' ' && obs2->discovery_asterisk == '*')
+      obs1->discovery_asterisk = '*';
 }
 
 /* For certain forms of orbit determination,  having radar observations right
@@ -2978,11 +2914,31 @@ int compare_observations( const void *a, const void *b, void *context)
       rval = 1;
    if( !rval)
       rval = obs1->note1 - obs2->note1;
+   if( !rval)
+      rval = strcmp( obs1->reference, obs2->reference);
    if( !rval && obs1->ra != obs2->ra)
       rval = (obs1->ra > obs2->ra ? 1 : -1);
    if( !rval && obs1->dec != obs2->dec)
       rval = (obs1->dec > obs2->dec ? 1 : -1);
    return( rval);
+}
+
+/* If two observations are within a threshhold of each other in time,
+they may be duplicates,  with one (say) recorded to five places and
+the other to six.  Or one in decimal days (80-column format) and
+the other in seconds (ADES).
+
+The threshhold may depend on the type of observation.  Video,  for
+example,  may provide a slew of observations within 1/30 second of
+each other.  Such nuances aren't currently implemented,  but they
+are why pointers to the full observation data are passed,  instead
+of just the observed times. */
+
+static bool times_very_close( OBSERVE *obs1, OBSERVE *obs2)
+{
+   const double threshhold = 3. / seconds_per_day;
+
+   return( fabs( obs1->jd - obs2->jd) < threshhold);
 }
 
 /* If we have duplicate observations,  but their RA/decs are within
@@ -3001,7 +2957,7 @@ static void exclude_unusable_duplicate_obs( OBSERVE *obs, int n_obs)
       int j;
 
       i = 1;
-      while( i < n_obs && obs[i].jd == obs->jd
+      while( i < n_obs && times_very_close( obs, obs + i)
                         && !strcmp( obs[i].mpc_code, obs->mpc_code))
          {
          const double d_ra = centralize_ang( obs[i].ra - obs->ra);
@@ -3031,7 +2987,7 @@ static void exclude_unusable_duplicate_obs( OBSERVE *obs, int n_obs)
 /* Does what the function name suggests.  Return value is the number
 of observations left after duplicates have been removed.   */
 
-int sort_obs_by_date_and_remove_duplicates( OBSERVE *obs, const int n_obs)
+static int sort_obs_by_date_and_remove_duplicates( OBSERVE *obs, const int n_obs)
 {
    int i, j;
 
@@ -3041,8 +2997,9 @@ int sort_obs_by_date_and_remove_duplicates( OBSERVE *obs, const int n_obs)
    if( debug_level)
       debug_printf( "%d obs sorted by date\n", n_obs);
    for( i = j = 1; i < n_obs; i++)
-      if( obs[i].jd != obs[i - 1].jd || strcmp( obs[i].mpc_code,
-                                                obs[i - 1].mpc_code))
+      if( !times_very_close( obs + i, obs + i - 1)
+                      || strcmp( obs[i].mpc_code, obs[i - 1].mpc_code)
+                      || (obs[i].flags & OBS_DONT_USE))
          obs[j++] = obs[i];
       else if( memcmp( obs + i, obs + i - 1, sizeof( OBSERVE)))
          {
@@ -3168,6 +3125,12 @@ int unload_observations( OBSERVE FAR *obs, const int n_obs)
       {
       destroy_stack( _ades_ids_stack);
       _ades_ids_stack = NULL;
+      }
+   if( rovers)
+      {
+      free( rovers);
+      rovers = NULL;
+      n_rovers = 0;
       }
    available_sigmas = NO_SIGMAS_AVAILABLE;
    return( 0);
@@ -3386,7 +3349,7 @@ static inline void check_for_star( const OBSERVE *obs, const int n_obs)
          max_dec = obs[i].dec;
       }
    if( max_ra - min_ra < tolerance && max_dec - min_dec < tolerance)
-      generic_message_box( get_find_orb_text( 2001), "o");
+      generic_message_box( get_find_orb_text( 2001), "!");
 }
 
 /* ADES sigmas are converted into a punched-card compatible format such as
@@ -3400,11 +3363,11 @@ have to be given. */
 
 static inline int extract_ades_sigmas( const char *buff,
          double *posn1, double *posn2, double *theta,
-         double *mag_sigma, double *time_sigma)
+         double *mag_sigma, double *time_sigma, double *unc_time)
 {
    int loc, rval = -1;
 
-   if( sscanf( buff, "%lf%n", posn1, &loc) == 1)
+   if( sscanf( buff, "%lf%n", posn2, &loc) == 1)
       {
       const char *tptr;
 
@@ -3412,7 +3375,7 @@ static inline int extract_ades_sigmas( const char *buff,
       *theta = 0.;
       if( buff[loc] == 'x')
          {
-         *posn2 = atof( buff + loc + 1);
+         *posn1 = atof( buff + loc + 1);
          while( buff[loc] > ' ' && buff[loc] != ',')
             loc++;
          if( buff[loc] == ',')
@@ -3421,17 +3384,19 @@ static inline int extract_ades_sigmas( const char *buff,
 
             convert_ades_sigmas_to_error_ellipse( *posn1, *posn2,
                               correlation, posn1, posn2, theta);
-            *theta = PI / 2. + *theta;
             }
          }
       else        /* circular position error */
-         *posn2 = *posn1;
+         *posn1 = *posn2;
       tptr = strstr( buff + loc, "m:");
       if( tptr)
          *mag_sigma = atof( tptr + 2);
       tptr = strstr( buff + loc, "t:");
       if( tptr)
          *time_sigma = atof( tptr + 2) / seconds_per_day;
+      tptr = strstr( buff + loc, "u:");
+      if( tptr)
+         *unc_time   = atof( tptr + 2) / seconds_per_day;
       }
    if( rval)
       debug_printf( "Malformed ADES sigma: '%s'\n", buff);
@@ -3456,17 +3421,15 @@ static void reset_object_type( const OBSERVE *obs, const int n_obs)
          else
             n_asteroid++;
          }
-   if( n_total + n_nuclear > n_asteroid)
-      object_type = OBJECT_TYPE_COMET;
-   else if( n_asteroid)
-      object_type = OBJECT_TYPE_ASTEROID;
-                 /* if all observations are from SOHO and STEREO-A & B, */
-                 /* the object is almost certainly a comet */
-   i = 0;
-   while( i < n_obs && strstr( "249 C49 C50", obs[i].mpc_code))
-      i++;
-   if( i == n_obs)
-      object_type = OBJECT_TYPE_COMET;
+   if( object_type != OBJECT_TYPE_COMET)
+      {
+      if( n_total + n_nuclear > n_asteroid)
+         object_type = OBJECT_TYPE_COMET;
+      else if( is_sungrazing_comet( obs, n_obs))
+         object_type = OBJECT_TYPE_COMET;
+      else if( n_asteroid)
+         object_type = OBJECT_TYPE_ASTEROID;
+      }
    if( object_type == OBJECT_TYPE_COMET)
       {
       extern char default_comet_magnitude_type;
@@ -3487,23 +3450,6 @@ bool nighttime_only( const char *mpc_code)
 #define INSUFFICIENT_PRECISION_TIME     2
 #define INSUFFICIENT_PRECISION_POSN1    4
 #define INSUFFICIENT_PRECISION_POSN2    8
-
-static void warn_about_insufficient_precision( const OBSERVE *obs, const int flags)
-{
-   char buff[90], msg[500];
-   const char *quantity;
-
-   full_ctime( buff, utc_from_td( obs->jd, NULL), FULL_CTIME_YMD);
-   if( flags & INSUFFICIENT_PRECISION_MAG)
-      quantity = "magnitude";
-   else if( flags & INSUFFICIENT_PRECISION_MAG)
-      quantity = "time";
-   else
-      quantity = "RA/dec";
-   snprintf_err( msg, sizeof( msg), get_find_orb_text( 2072),
-             buff, obs->mpc_code, quantity);
-   generic_message_box( msg, "o");
-}
 
 static bool _is_synthetic_obs( const OBSERVE *obs)
 {
@@ -3535,6 +3481,12 @@ single_observation_posn_sigma_1 looked too long to me.     */
    /* adjusted in 'environ.dat'.                                  */
 double maximum_observation_span = 200.;
 
+   /* The longest ADES line I've seen was about 570 bytes.  2000 bytes  */
+   /* ought to be enough for anyone.  (I may add error checks/warnings  */
+   /* here,  though.)                                                   */
+
+#define MAX_ADES_LINE_LEN 2000
+
 int sanity_check_observations = 1;
 bool use_sigmas = true;
 extern int is_interstellar;
@@ -3544,14 +3496,13 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                            const int n_obs)
 {
    const double days_per_year = 365.25;
-   char buff[650], mpc_code_from_neocp[4], desig_from_neocp[15];
+   char buff[MAX_ADES_LINE_LEN], mpc_code_from_neocp[4], desig_from_neocp[15];
    char obj_name[80], curr_ades_ids[100];
    OBSERVE FAR *rval;
    bool including_obs = true;
    int i, n_fixes_made = 0, n_future_obs = 0;
    unsigned line_no = 0;
    unsigned n_below_horizon = 0, n_in_sunlight = 0;
-   unsigned lines_actually_read = 0;
    unsigned n_spurious_matches = 0;
    unsigned n_sat_obs_without_offsets = 0;
    double override_posn_sigma_1 = 0., ades_posn_sigma_1 = 0.;  /* in arcsec */
@@ -3559,6 +3510,7 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
    double override_posn_sigma_theta = 0., ades_posn_sigma_theta = 0.;
    double override_mag_sigma = 0., ades_mag_sigma = 0.;   /* in mags */
    double override_time_sigma = 0., ades_time_sigma = 0.;  /* in seconds */
+   double unc_time = 0.;
             /* We distinguish between observations that are complete clones */
             /* of each other,  and those with the same time, RA/dec, MPC    */
             /* code, and magnitude,  but which differ someplace else.       */
@@ -3575,12 +3527,11 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
    int spacecraft_offset_reference = 399;    /* default is geocenter */
    double spacecraft_vel[3];
    static int suppress_private_obs = -1;
-   int insufficient_precision_warning_shown = 0;
+   int count_satellite_coord_errors[N_SATELL_COORD_ERRORS];
 
-#ifdef CONSOLE
+   memset( count_satellite_coord_errors, 0, sizeof( count_satellite_coord_errors));
    move_add_nstr( 1, 2, "Loading observations", -1);
    refresh_console( );
-#endif
    *desig_from_neocp = '\0';
    strcpy( mpc_code_from_neocp, "500");   /* default is geocenter */
    neocp_file_type = NEOCP_FILE_TYPE_UNKNOWN;
@@ -3617,7 +3568,6 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       double jd;
 
       line_no++;
-      lines_actually_read++;
       if( *buff == '<')
          remove_html_tags( buff);
       if( !strncmp( buff, "errmod  = 'fcct14'", 18))
@@ -3637,7 +3587,7 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
             debug_printf( "Got .rwo data\n");
          }
       if( fixing_trailing_and_leading_spaces)
-         fixes_made = fix_up_mpc_observation( buff);
+         fixes_made = fix_up_mpc_observation( buff, NULL);
       original_packed_desig[12] = '\0';
       memcpy( original_packed_desig, buff, 12);
       xref_designation( buff);
@@ -3665,7 +3615,10 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                if( buff[14] == 'R' && is_rwo)
                   strcpy( second_line, buff + 81);
                else if( !look_for_matching_line( buff, second_line, sizeof( second_line)))
+                  {
                   observation_is_good = false;
+                  jd = 0.;
+                  }
                if( observation_is_good)
                   {
                   rval[i].ref_center = spacecraft_offset_reference;
@@ -3678,14 +3631,20 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                double vect[3];
                int j, error_code;
 
-               lines_actually_read++;
                rval[i].satellite_obs = (char)(second_line[32] - '0');
                error_code = get_satellite_offset( second_line, vect);
+               assert( error_code <= 0 && error_code > -N_SATELL_COORD_ERRORS);
+               count_satellite_coord_errors[-error_code]++;
                if( error_code)
                   {
+                  char tbuff[6];
+
                   rval[i].flags |= OBS_DONT_USE;
                   rval[i].is_included = 0;
-                  comment_observation( rval + i, "?off");
+                  strcpy( tbuff, "?off ");
+                  tbuff[4] = (char)( '0' - error_code);
+                  tbuff[5] = '\0';
+                  comment_observation( rval + i, tbuff);
                   n_bad_satellite_offsets++;
                   debug_printf( "Error code %d; offending line was:\n%s\n",
                      error_code, second_line);
@@ -3704,7 +3663,6 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                }
             else if( buff[14] == 'R' && observation_is_good)
                {      /* we did find the "matching" line: */
-               lines_actually_read++;
 //             fix_radar_time( buff);
                rval[i].second_line = (char *)malloc( 81 * 2);
                strcpy( rval[i].second_line, second_line);
@@ -3719,7 +3677,6 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                const double dist_tol = 0.0003;  /* 3e-4 degrees = about 30 meters */
                int idx = 0;
 
-               lines_actually_read++;
                xref_designation( second_line);
                while( idx < n_rovers &&
                             (fabs( rlon - rovers[idx].lon) > dist_tol ||
@@ -3765,18 +3722,24 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                }
             if( rval[i].reference[0] == '!' && suppress_private_obs == -1)
                {
-               const int c = generic_message_box( get_find_orb_text( 2052), "o");
+               const char *suppression = get_environment_ptr( "PRIVATE_OBS");
 
-               if( c == 'y' || c == 'Y')     /* first time we see 'private' obs, */
-                  suppress_private_obs = 0;  /* ask if user wants them included */
+               if( *suppression)
+                  suppress_private_obs = atoi( suppression);
                else
-                  suppress_private_obs = 1;
+                  {
+                  const int c = generic_message_box( get_find_orb_text( 2052), "o");
+
+                  if( c == 'y' || c == 'Y')     /* first time we see 'private' obs, */
+                     suppress_private_obs = 0;  /* ask if user wants them included */
+                  else
+                     suppress_private_obs = 1;
+                  }
                }
             if( rval[i].reference[0] == '!' && suppress_private_obs)
                observation_is_good = false;
             if( observation_is_good)
                {
-               int insufficient_precision = 0;
                const double radians_per_arcsec = PI / (180. * 3600.);
                double mag_sigma = 0., time_sigma = 0.;
                double posn_sigma_1, posn_sigma_2;
@@ -3802,9 +3765,18 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
 
                   SET_SIGMA( mag_sigma, ades_mag_sigma, override_mag_sigma);
                   SET_SIGMA( time_sigma, ades_time_sigma, override_time_sigma);
-                  SET_SIGMA( posn_sigma_1, ades_posn_sigma_1, override_posn_sigma_1);
-                  SET_SIGMA( posn_sigma_2, ades_posn_sigma_2, override_posn_sigma_2);
-                  SET_SIGMA( posn_sigma_theta, ades_posn_sigma_theta, override_posn_sigma_theta);
+                  if( ades_posn_sigma_1 > 0.)
+                     {
+                     posn_sigma_1 = ades_posn_sigma_1;
+                     posn_sigma_2 = ades_posn_sigma_2;
+                     posn_sigma_theta = ades_posn_sigma_theta;
+                     }
+                  else if( override_posn_sigma_1 > 0.)
+                     {
+                     posn_sigma_1 = override_posn_sigma_1;
+                     posn_sigma_2 = override_posn_sigma_2;
+                     posn_sigma_theta = override_posn_sigma_theta;
+                     }
 
                   if( sscanf( rval[i].columns_57_to_65, "%lf %lf%n",
                               &ra_sigma, &dec_sigma, &bytes_read) >= 2
@@ -3863,23 +3835,19 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
 //                insufficient_precision |= INSUFFICIENT_PRECISION_MAG;
                if( time_sigma * 1.1 > rval[i].time_sigma || !use_sigmas)
                   rval[i].time_sigma = time_sigma;
-               else
-                  insufficient_precision |= INSUFFICIENT_PRECISION_TIME;
+//             else if( rval[i].note2 != 'X')
+//                insufficient_precision |= INSUFFICIENT_PRECISION_TIME;
                if( posn_sigma_1 * 1.1 > rval[i].posn_sigma_1 || !use_sigmas)
                   rval[i].posn_sigma_1 = posn_sigma_1;
-               else
-                  insufficient_precision |= INSUFFICIENT_PRECISION_POSN1;
-               if( posn_sigma_2 * 1.1 > rval[i].posn_sigma_2 || !use_sigmas)
+//             else if( rval[i].note2 != 'X')
+//                insufficient_precision |= INSUFFICIENT_PRECISION_POSN1;
+               if( posn_sigma_2 * 1.1 > rval[i].posn_sigma_2 || !use_sigmas
+                                 || !posn_sigma_2)
                   rval[i].posn_sigma_2 = posn_sigma_2;
-               else
-                  insufficient_precision |= INSUFFICIENT_PRECISION_POSN2;
-               if( insufficient_precision && !insufficient_precision_warning_shown
-                           && use_sigmas)
-                  {
-                  warn_about_insufficient_precision( rval + i, insufficient_precision);
-                  insufficient_precision_warning_shown = 1;
-                  }
+//             else if( rval[i].note2 != 'X')
+//                insufficient_precision |= INSUFFICIENT_PRECISION_POSN2;
                rval[i].posn_sigma_theta = posn_sigma_theta;
+               rval[i].unc_time = unc_time;
                if( !including_obs)
                   rval[i].is_included = 0;
                if( apply_debiasing)
@@ -3911,13 +3879,13 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                }
             }
          }
-      if( is_in_range( jd))     /* Sigmas from ADES or Dave Tholen apply to only */
-         {                 /* one observation.  Zero 'em out after that use : */
+      if( jd > 1.)       /* Sigmas from ADES or Dave Tholen apply to only */
+         {              /* one observation.  Zero 'em out after that use : */
          ades_posn_sigma_1 = ades_posn_sigma_2 = ades_mag_sigma = 0.;
-         ades_posn_sigma_theta = ades_time_sigma = 0.;
+         ades_posn_sigma_theta = ades_time_sigma = unc_time = 0.;
          }
       override_time = 0.;
-      override_ra = override_dec = -100.;
+      override_ra = override_dec = override_mag = -100.;
       convert_com_to_pound_sign( buff);
                /* For backwards compatibility,  we'll handle both 'weight' */
                /* and 'sigma' keywords,  with the former considered to     */
@@ -3946,11 +3914,13 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                                     &override_dec, &override_time))
                override_time += J2000;
             }
+         else if( !memcmp( buff, "#full mag ", 9))
+            override_mag = atof( buff + 9);
          else if( !memcmp( buff, "#Sigmas ", 8))
             extract_ades_sigmas( buff + 8, &ades_posn_sigma_1,
                         &ades_posn_sigma_2,
                         &ades_posn_sigma_theta,
-                        &ades_mag_sigma, &ades_time_sigma);
+                        &ades_mag_sigma, &ades_time_sigma, &unc_time);
          else if( !memcmp( buff, "#Mag sigma ", 11))
             override_mag_sigma = atof( buff + 11);
          else if( !memcmp( buff, "#Time sigma ", 12))
@@ -3979,8 +3949,6 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
             including_obs = true;
          else if( !memcmp( buff, "#toffset", 7))
             observation_time_offset = atof( buff + 8) / seconds_per_day;
-         else if( !memcmp( buff, "#relax_xyz", 10))
-            strict_sat_xyz_format = false;
          else if( !memcmp( buff, "#interstellar", 12))
             is_interstellar = 1;
          else if( !memcmp( buff, "#time ", 6))
@@ -3995,9 +3963,9 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                ;     /* deliberately empty loop */
          else if( !memcmp( buff, "#Offset center ", 15))
             spacecraft_offset_reference = atoi( buff + 15);
-         else if( !memcmp( buff, "#Spacecraft vel ", 16))
+         else if( !memcmp( buff, "#vel (km/s) ", 12))
             {
-            int n_scanned = sscanf( buff + 16, "%lf %lf %lf", spacecraft_vel,
+            int n_scanned = sscanf( buff + 30, "%lf %lf %lf", spacecraft_vel,
                         spacecraft_vel + 1, spacecraft_vel + 2);
 
             assert( 3 == n_scanned);
@@ -4005,6 +3973,16 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
             }
          else if( !memcmp( buff, "#IDs ", 5))
             strlcpy_err( curr_ades_ids, buff + 5, sizeof( curr_ades_ids));
+         else if( !memcmp( buff, "#'getradar' version", 19))
+            {
+            int j = 0;  /* we're replacing/updating the radar observations */
+                        /* using JPL data.  So remove the old MPC radar. */
+            while( j < i)
+               if( rval[j].note2 == 'R')
+                  rval[j] = rval[--i];    /* remove the radar observation */
+               else
+                  j++;
+            }
          }
       }
    free_ades2mpc_context( ades_context);
@@ -4015,6 +3993,12 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       if( rval[i].note2 == 'X' || rval[i].note2 == 'x')     /* deleted observation */
          {
          comment_observation( rval + i, "Deleted");
+         rval[i].flags |= OBS_DONT_USE;
+         rval[i].is_included = 0;
+         }
+      else if( rval[i].posn_sigma_1 <= 0. || rval[i].posn_sigma_2 <= 0.)
+         {
+         comment_observation( rval + i, "BadSigm");
          rval[i].flags |= OBS_DONT_USE;
          rval[i].is_included = 0;
          }
@@ -4029,10 +4013,11 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2007),
                      (rval[i - 1].jd - rval[0].jd) /  days_per_year,
                      maximum_observation_span);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       while( rval[i - 1].jd - rval[j].jd > maximum_observation_span * days_per_year)
          j++;
       i -= j;
+      n_obs_actually_loaded -= j;
       memmove( rval, rval + j, i * sizeof( OBSERVE));
       }
 
@@ -4042,26 +4027,29 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
    monte_carlo_object_count = 0;
    n_monte_carlo_impactors = 0;
    if( look_for_matching_line( NULL, buff, sizeof( buff)))
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
    if( n_fixes_made)
       {
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2028),
                      n_fixes_made);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
    if( n_duplicate_obs_found)
       {
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2009),
                      n_duplicate_obs_found);
       debug_printf( "%s:\n", rval->packed_id);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
    if( n_bad_satellite_offsets)
       {
-      debug_printf( "%u bad sat offsets\n", n_bad_satellite_offsets);
-      snprintf_err( buff, sizeof( buff), get_find_orb_text( 2010),
-                     n_bad_satellite_offsets);
-      generic_message_box( buff, "o");
+      *buff = '\0';
+      for( i = 0; i < N_SATELL_COORD_ERRORS; i++)
+         if( count_satellite_coord_errors[i])
+            snprintf_append( buff, sizeof( buff), get_find_orb_text( i + 2090),
+                                   count_satellite_coord_errors[i]);
+      strlcat_error( buff, get_find_orb_text( 2010));
+      generic_message_box( buff, "!");
       }
 
    if( n_parse_failures)
@@ -4069,7 +4057,7 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2011),
                      n_parse_failures);
       debug_printf( "%s:\n", rval->packed_id);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
 
    if( sanity_check_observations)
@@ -4112,10 +4100,10 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                         n_in_sunlight);
       strlcat_error( buff, get_find_orb_text( 2014));
       debug_printf( "%s:\n", rval->packed_id);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
    for( i = 1; i < n_obs_actually_loaded; i++)
-      if( rval[i].jd == rval[i - 1].jd && !strcmp( rval[i].mpc_code, rval[i - 1].mpc_code))
+      if( times_very_close( rval + i, rval + i - 1) && !strcmp( rval[i].mpc_code, rval[i - 1].mpc_code))
          if( toupper( rval[i].note2) != 'X' && toupper( rval[i - 1].note2) != 'X')
             if( !spacewatch_duplication( rval + i - 1))
                {
@@ -4135,14 +4123,14 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2015),
                n_spurious_matches);
       debug_printf( "%s:\n", rval->packed_id);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
    if( n_almost_duplicates_found)
       {
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2016),
                n_almost_duplicates_found);
       debug_printf( "%s:\n", rval->packed_id);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
    for( i = 0; i < n_obs_actually_loaded; i++)
       if( rval[i].flags & OBS_NO_OFFSET)
@@ -4152,7 +4140,7 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       {
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2017),
                         n_sat_obs_without_offsets);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
    i = n_obs_actually_loaded;
    while( i-- >= 0 && rval[i].jd > current_jd( ))
@@ -4162,7 +4150,7 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       {
       snprintf_err( buff, sizeof( buff), get_find_orb_text( 2018),
                      n_future_obs);
-      generic_message_box( buff, "o");
+      generic_message_box( buff, "!");
       }
 
 #ifdef FUTURE_SATELLITE_OBS_CHECKING
@@ -4182,12 +4170,11 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
          if( rval[i].note2 == 'x')     /* check for deleted satellite observation */
             {
             int j = -1;
-            const double thresh = 1.1e-5;    /* allow for roundoff */
 
-            if( i > 0 && rval[i].jd - rval[i-1].jd < thresh
+            if( i > 0 && times_very_close( rval + i, rval + i - 1)
                        && !strcmp( rval[i].mpc_code, rval[i - 1].mpc_code))
                j = i-1;
-            if( i < n_obs_actually_loaded - 1 && rval[i+1].jd - rval[i].jd < thresh
+            if( i < n_obs_actually_loaded - 1 && times_very_close( rval + i + 1, rval + i)
                        && !strcmp( rval[i].mpc_code, rval[i + 1].mpc_code))
                j = i+1;
             if( j >= 0)
@@ -4199,11 +4186,9 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
       reset_object_type( rval, n_obs_actually_loaded);
       apply_excluded_observations_file( rval, n_obs_actually_loaded);
       }
-#ifdef CONSOLE
    snprintf_err( buff, sizeof( buff), "%d observations actually loaded", n_obs_actually_loaded);
    move_add_nstr( 1, 2, buff, -1);
    refresh_console( );
-#endif
    return( rval);
 }
 
@@ -4269,6 +4254,59 @@ void sort_object_info( OBJECT_INFO *ids, const int n_ids,
                                     &object_info_compare_method);
 }
 
+const char *desig_pattern = NULL, *fullname_pattern = NULL;
+
+/* One can specify,  e.g.,  '-N C314159,K22Ea4C' to process only
+those two objects.  I may eventually implement something more
+regular expression-ish. */
+
+static bool desig_pattern_matched( OBJECT_INFO *id, const char *pattern)
+{
+   char packed_desig[13];
+   size_t i = 0, j;
+
+   strlcpy_error( packed_desig, id->packed_desig);
+   text_search_and_replace( packed_desig, " ", "");
+   while( pattern[i])
+      {
+      char tpattern[30];
+
+      j = i;
+      while( pattern[j] != ',' && pattern[j])
+         j++;
+      assert( j - i < sizeof( tpattern) - 1);
+      strlcpy( tpattern, pattern + i, j - i + 1);
+      if( pattern_match( tpattern, packed_desig))
+         return( true);
+      i = j;
+      if( pattern[i] == ',')
+         i++;
+      }
+   return( false);
+}
+
+static bool fullname_pattern_matched( const char *full_name, const char *pattern)
+{
+   size_t i = 0, j;
+
+   while( pattern[i])
+      {
+      char tpattern[80];
+
+      j = i;
+      while( pattern[j] != ',' && pattern[j])
+         j++;
+      assert( j - i < sizeof( tpattern) - 1);
+      strlcpy( tpattern, pattern + i, j - i + 1);
+      if( pattern_match( tpattern, full_name))
+         return( true);
+      i = j;
+      if( pattern[i] == ',')
+         i++;
+      }
+   return( false);
+}
+
 /* find_objects_in_file( ) reads through the file of MPC astrometric data
    specified by 'filename',  and figures out which objects appear in that
    file.  Those objects can then be listed on the console (findorb) or
@@ -4296,13 +4334,11 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
    int i, n = 0, n_alloced = 20, prev_loc = -1;
    const int fixing_trailing_and_leading_spaces =
                *get_environment_ptr( "FIX_OBSERVATIONS");
-   char buff[550], mpc_code_from_neocp[4], desig_from_neocp[15];
+   char buff[MAX_ADES_LINE_LEN], mpc_code_from_neocp[4], desig_from_neocp[15];
    void *ades_context;
-#ifdef CONSOLE
    const clock_t t0 = clock( );
    int next_output = 2000, n_obs_read = 0;
    long filesize;
-#endif
 
    if( obj_name_stack)
       {
@@ -4319,11 +4355,9 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
          *n_found = -1;
       return( NULL);
       }
-#ifdef CONSOLE
    fseek( ifile, 0L, SEEK_END);
    filesize = ftell( ifile);
    fseek( ifile, 0L, SEEK_SET);
-#endif
    *mpc_code_from_neocp = '\0';
    *desig_from_neocp = '\0';
    *new_xdesig = *new_name = '\0';
@@ -4338,7 +4372,7 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
       {
       size_t iline_len = strlen( buff);
       bool is_neocp = false;
-      double jd;
+      double jd = 0.;
 
       if( debug_level > 8)
          debug_printf( "Input line len %d\n", (int)strlen( buff));
@@ -4355,10 +4389,11 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
       if( iline_len > MINIMUM_RWO_LENGTH)
          rwo_to_mpc( buff, NULL, NULL, NULL, NULL, NULL);
       if( fixing_trailing_and_leading_spaces)
-         fix_up_mpc_observation( buff);
+         fix_up_mpc_observation( buff, &jd);
       if( debug_level > 8)
          debug_printf( "After fixup: %d\n", (int)strlen( buff));
-      jd = observation_jd( buff);
+      if( !jd)
+         jd = observation_jd( buff);
       if( jd && *new_xdesig)   /* previous line was "COM = (xdesig)";   */
          {                    /* add a new cross-designation to the table */
          memcpy( new_xdesig, buff, 12);
@@ -4449,7 +4484,6 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
                n_alloced = new_size;
                prev_loc = -1;
                }
-#ifdef CONSOLE
             n_obs_read++;
             if( n_obs_read == next_output)
                {
@@ -4472,7 +4506,6 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
                move_add_nstr( 4, 3, msg_buff, -1);
                refresh_console( );
                }
-#endif
             }
       if( *buff == '#')
          {
@@ -4491,6 +4524,10 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
          }
       if( !memcmp( buff, "#= ", 3))
          {
+         char *equals_ptr = strchr( buff + 3, '=');
+
+         if( equals_ptr)            /* if given multiple xrefs,  just */
+            *equals_ptr = '\0';     /* use the first one */
          *new_xdesig = '!';
          strlcpy( new_xdesig + 13, buff + 3, 20);
          strlcat( new_xdesig + 13, "            ", 14);
@@ -4517,15 +4554,37 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
       if( rval[i].packed_desig[0])
          rval[n++] = rval[i];
    assert( n == *n_found);
+   if( desig_pattern)
+      {
+      i = 0;
+      while( i < n)
+         if( !desig_pattern_matched( rval + i, desig_pattern))
+            {
+            memmove( rval + i, rval + i + 1, (n - i - 1) * sizeof( OBJECT_INFO));
+            n--;
+            }
+         else
+            i++;
+      }
    rval = (OBJECT_INFO *)realloc( rval, n * sizeof( OBJECT_INFO));
            /* Only now do we set the 'full' object names,  because  */
            /* some may have been added mid-file using COM fullname. */
    for( i = 0; i < n; i++)
       {
       get_object_name( buff, rval[i].packed_desig);
-      rval[i].obj_name = (char *)stack_alloc( obj_name_stack, strlen( buff) + 1);
-      strcpy( rval[i].obj_name, buff);
+      if( fullname_pattern && !fullname_pattern_matched( buff, fullname_pattern))
+         {
+         memmove( rval + i, rval + i + 1, (n - i - 1) * sizeof( OBJECT_INFO));
+         n--;
+         i--;
+         }
+      else
+         {
+         rval[i].obj_name = (char *)stack_alloc( obj_name_stack, strlen( buff) + 1);
+         strcpy( rval[i].obj_name, buff);
+         }
       }
+   *n_found = n;
    sort_object_info( rval, n, OBJECT_INFO_COMPARE_PACKED);
    return( rval);
 }
@@ -4536,7 +4595,7 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
    In Find_Orb, these details are shown for the station that made
    the currently-selected observation. */
 
-void put_observer_data_in_text( const char FAR *mpc_code, char *buff)
+int put_observer_data_in_text( const char FAR *mpc_code, char *buff)
 {
    double lon, lat, alt_in_meters;
    const int planet_idx = get_observer_data_latlon( mpc_code, buff,
@@ -4557,13 +4616,16 @@ void put_observer_data_in_text( const char FAR *mpc_code, char *buff)
       memmove( buff, name, strlen( name) + 1);
       if( lon || lat)
          {
-         const char *output_format = "  (%c%.6f %c%.6f)";
-
          lon *= 180. / PI;
          lat *= 180. / PI;
-         snprintf_append( buff, buffsize, output_format,
+         if( memcmp( name, "User-supplied", 13))
+            {
+            const char *output_format = "  (%c%.6f %c%.6f)";
+
+            snprintf_append( buff, buffsize, output_format,
                            (lat > 0. ? 'N' : 'S'), fabs( lat),
                            (lon > 0. ? 'E' : 'W'), fabs( lon));
+            }
          if( planet_idx == 3)
             {
             FILE *ifile = fopen_ext( "geo_rect.txt", "fcrb");
@@ -4577,6 +4639,7 @@ void put_observer_data_in_text( const char FAR *mpc_code, char *buff)
             }
          }
       }
+   return( planet_idx);
 }
 
 static const char *environ_dot_dat = "environ.dat";
@@ -4599,7 +4662,6 @@ int write_environment_pointers( void)
 static size_t get_environment_ptr_index( const char *env_ptr, bool *got_it)
 {
    size_t i = 0, n = n_lines;
-   const size_t len = strlen( env_ptr);
 
    *got_it = false;
    while( !*got_it && n)
@@ -4608,20 +4670,20 @@ static size_t get_environment_ptr_index( const char *env_ptr, bool *got_it)
 
       assert( edata[mid]);
       j = 0;
-      while( j < len && env_ptr[j] == edata[mid][j])
+      while( env_ptr[j] == edata[mid][j])
          j++;
-      if( j == len && edata[mid][j] == '=')
+      if( !env_ptr[j] && edata[mid][j] == '=')
          {
          *got_it = true;
          i = mid;
          }
-      else if( j < len && edata[mid][j] > env_ptr[j])
-         n /= 2;
-      else
+      else if( edata[mid][j] == '=' || edata[mid][j] < env_ptr[j])
          {
          n -= n / 2 + 1;
          i = mid + 1;
          }
+      else
+         n /= 2;
       }
    return( i);
 }
@@ -4741,7 +4803,6 @@ int load_environment_file( const char *filename)
 {
    FILE *ifile = fopen_ext( filename, (is_default_environment ? "crb" : "rb"));
    char buff[300], *tptr;
-   int n_lines = 0, n_set = 0;
 
    if( !ifile)
       return( -1);
@@ -4768,14 +4829,12 @@ int load_environment_file( const char *filename)
       }
    fseek( ifile, 0L, SEEK_SET);
    while( fgets_trimmed( buff, sizeof( buff), ifile))
-      if( *buff != ' ' && (tptr = strchr( buff, '=')) != NULL)
+      if( *buff != ' ' && *buff != '#' &&
+                     (tptr = strchr( buff, '=')) != NULL && tptr[1] >= ' ')
          {
          *tptr = '\0';
          set_environment_ptr( buff, tptr + 1);
-         n_set++;
          }
-      else
-         n_lines++;
    fclose( ifile);
    return( 0);
 }
@@ -4803,7 +4862,7 @@ void update_environ_dot_dat( void)
 
       if( !text)
          text = load_file_into_memory( "environ.def", NULL, true);
-      ofile = fopen_ext( environ_dot_dat, "tfcwb");
+      ofile = fopen_ext( environ_dot_dat, "fcwb");
       assert( ofile);
       for( i = 0; text[i]; i++)
          {
@@ -4911,25 +4970,26 @@ result in a D or later half-month specification.  And it couldn't be 2012,
 because it would then have a B or A half-month specification.)   That's why
 the observation JD is passed in. */
 
-static void reference_to_text( char *obuff, const char *reference,
-                                            const double jd)
+static void reference_to_text( char *obuff, const size_t obuff_size,
+                                 const char *reference, const double jd)
 {
+   assert( 5 == strlen( reference));
    if( !strcmp( reference, "     "))       /* no reference given */
       *obuff = '\0';
    else if( !strcmp( reference, "neocp"))
       strcpy( obuff, "NEOCP");
    else if( *reference >= '0' && *reference <= '9')
-      sprintf( obuff, "MPC %s", reference);
+      snprintf_err( obuff, obuff_size, "MPC %s", reference);
    else if( *reference == '@')
-      sprintf( obuff, "MPC 10%s", reference + 1);
+      snprintf_err( obuff, obuff_size, "MPC 10%s", reference + 1);
    else if( *reference >= 'a' && *reference <= 'z')
-      sprintf( obuff, "MPS %d%s", *reference - 'a', reference + 1);
+      snprintf_err( obuff, obuff_size, "MPS %d%s", *reference - 'a', reference + 1);
    else if( *reference == 'E')
       {
       int obs_year, curr_year;
       char obs_letter, curr_letter;
 
-      sprintf( obuff, "MPEC ?  ?-%c%d", reference[1], atoi( reference + 2));
+      snprintf_err( obuff, obuff_size, "MPEC ?  ?-%c%d", reference[1], atoi( reference + 2));
       obuff[6] = obuff[7] = '?';    /* attempt to evade trigraph oddities */
       obs_year = get_year_and_mpc_half_month_letter( jd, &obs_letter);
       curr_year = get_year_and_mpc_half_month_letter( current_jd( ), &curr_letter);
@@ -4939,17 +4999,17 @@ static void reference_to_text( char *obuff, const char *reference,
          obs_year++;
       if( curr_year == obs_year)    /* this reference can only mean one year: */
          {
-         sprintf( obuff + 5, "%4d", curr_year);
+         snprintf_err( obuff + 5, obuff_size - 5, "%4d", curr_year);
          obuff[9] = '-';
          }
       }
    else if( *reference == 'D' && isdigit( reference[1]))
-      sprintf( obuff, "DASO %d", atoi( reference + 1));
+      snprintf_err( obuff, obuff_size, "DASO %d", atoi( reference + 1));
    else if( *reference == '~' || *reference == '#')   /* MPS or MPC number, */
       {                 /* packed as four "mutant hex" (base 62) digits */
       const unsigned number = get_mutant_hex_value( reference + 1, 4);
 
-      sprintf( obuff, "MP%c %u", ((*reference == '~') ? 'S' : 'C'),
+      snprintf_err( obuff, obuff_size, "MP%c %u", ((*reference == '~') ? 'S' : 'C'),
                         number + ((*reference == '~') ? 260000 : 110000));
       }
    else           /* just copy it in,  but add a space */
@@ -4959,7 +5019,7 @@ static void reference_to_text( char *obuff, const char *reference,
       *obuff++ = ' ';
       while( *reference == '0')
          reference++;
-      strcpy( obuff, reference);
+      strlcpy_err( obuff, reference, obuff_size);
       }
 }
 
@@ -5010,21 +5070,22 @@ static void format_motion( char *obuff, const double motion)
    static const char degree_symbol = (char)0xf8;
 #endif
    const double fabs_motion = fabs( motion);
+   const size_t obuff_size = 12;
 
    if( fabs_motion < 99.)
-      sprintf( obuff, "%5.2f'/hr", motion);
+      snprintf_err( obuff, obuff_size, "%5.2f'/hr", motion);
    else if( fabs_motion < 999.)
-      sprintf( obuff, "%5.1f'/hr", motion);
+      snprintf_err( obuff, obuff_size, "%5.1f'/hr", motion);
    else if( fabs_motion < 99999.)
-      sprintf( obuff, "%5.0f'/hr", motion);
+      snprintf_err( obuff, obuff_size, "%5.0f'/hr", motion);
    else if( fabs_motion < 99999. * 60.)
-      sprintf( obuff, "%5.0f%c/hr", motion / 60., degree_symbol);
+      snprintf_err( obuff, obuff_size, "%5.0f%c/hr", motion / 60., degree_symbol);
    else if( fabs_motion < 99999. * 3600.)
-      sprintf( obuff, "%5.0f%c/min", motion / 3600., degree_symbol);
+      snprintf_err( obuff, obuff_size, "%5.0f%c/min", motion / 3600., degree_symbol);
    else if( fabs_motion < 99999. * 216000.)
-      sprintf( obuff, "%5.0f%c/sec", motion / 216000., degree_symbol);
+      snprintf_err( obuff, obuff_size, "%5.0f%c/sec", motion / 216000., degree_symbol);
    else
-      strcpy( obuff, "!!!!!");
+      strlcpy_err( obuff, "!!!!!", obuff_size);
 }
 
 static double relative_velocity( const double *loc1, const double *vel1,
@@ -5116,8 +5177,8 @@ int compute_radar_info( const OBSERVE *obs, RADAR_INFO *rinfo)
    memcpy( tbuff, first_line + 62, 5);
    tbuff[5] = '.';
    tbuff[6] = first_line[67];
-   memcpy( tbuff + 7, obs->second_line + 62, 8);
-   tbuff[15] = '\0';
+   memcpy( tbuff + 7, obs->second_line + 62, 6);
+   tbuff[13] = '\0';
    rinfo->freq_hz = atof( tbuff) * 1e+6;   /* cvt MHz to Hz */
    rinfo->rtt_obs = extract_radar_value( first_line + 32) * 1.e-6;
    rinfo->rtt_sigma = extract_radar_value( obs->second_line + 32) * 1e-6;
@@ -5125,6 +5186,7 @@ int compute_radar_info( const OBSERVE *obs, RADAR_INFO *rinfo)
    rinfo->doppler_sigma = extract_radar_value( obs->second_line + 47);
    rinfo->doppler_comp = (doppler_factor - 1.) * rinfo->freq_hz;
    rinfo->rtt_comp = time_diff;
+   assert( rinfo->doppler_sigma > 0. || rinfo->rtt_sigma > 0.);
    return( 0);
 }
 
@@ -5133,22 +5195,25 @@ static void show_radar_info( char *buff, const OBSERVE *obs)
    RADAR_INFO rinfo;
 
    compute_radar_info( obs, &rinfo);
-   sprintf( buff, "RTDist (C) %.8fs = %.3f km; Dopp %.8f km/s = %.2f Hz",
+   snprintf_err( buff, 90, "RTDist (C) %.8fs = %.3f km; Dopp %.8f km/s = %.2f Hz",
                rinfo.rtt_comp, rinfo.rtt_comp * SPEED_OF_LIGHT,
                rinfo.doppler_comp * SPEED_OF_LIGHT / rinfo.freq_hz,
                rinfo.doppler_comp);
 }
 
-static size_t strip_trailing_zeroes( char *buff)
+static void strip_trailing_zeroes( char *buff)
 {
-   size_t i = strlen( buff);
+   buff = strchr( buff, '.');
+   if( buff)
+      {
+      size_t i = strlen( buff);
 
-   while( i && buff[i - 1] == '0')
-      i--;
-   if( i && buff[i - 1] == '.')
-      i--;
-   buff[i] = '\0';
-   return( i);
+      while( i && buff[i - 1] == '0')
+         i--;
+      if( i == 1)
+         i = 0;
+      buff[i] = '\0';
+      }
 }
 
 /* get_net_used_from_obs_header( ) looks through the observation header
@@ -5205,8 +5270,8 @@ static int generate_observation_text( const OBSERVE FAR *obs, const int idx,
    const double earth_sun = vector3_length( optr->obs_posn);
 
    *buff = '\0';
-   if( buffsize > 100)      /* no line should be larger than this, */
-      buffsize = 100;       /* even if the buffer does have room for it */
+   if( buffsize > 110)      /* no line should be larger than this, */
+      buffsize = 110;       /* even if the buffer does have room for it */
    switch( line_number)
       {
       case 0:
@@ -5313,11 +5378,11 @@ static int generate_observation_text( const OBSERVE FAR *obs, const int idx,
             snprintf_append( buff, buffsize, "   radial vel %.3f km/s  cross ",
                                       m.radial_vel);
             if( fabs( m.cross_residual) < 9.9)
-               sprintf( tbuff, "%.2f", m.cross_residual);
+               snprintf_err( tbuff, sizeof( tbuff), "%.2f", m.cross_residual);
             else if( fabs( m.cross_residual) < 99.9)
-               sprintf( tbuff, "%4.1f", m.cross_residual);
+               snprintf_err( tbuff, sizeof( tbuff), "%4.1f", m.cross_residual);
             else if( fabs( m.cross_residual) < 9999.)
-               sprintf( tbuff, "%4d", (int)m.cross_residual);
+               snprintf_err( tbuff, sizeof( tbuff), "%4d", (int)m.cross_residual);
             else
                strlcpy_error( tbuff, "!!!!");
             strlcat_err( buff, tbuff, buffsize);
@@ -5373,25 +5438,30 @@ static int generate_observation_text( const OBSERVE FAR *obs, const int idx,
                   || optr->posn_sigma_1 != optr->posn_sigma_2)
             if( optr->note2 != 'R')
                {
-               int tilt_angle = 0;
                char sig1_buff[20], sig2_buff[20];
 
                snprintf_err( sig1_buff, sizeof( sig1_buff), "%.6f", optr->posn_sigma_1);
                remove_insignificant_digits( sig1_buff);
+               strip_trailing_zeroes( sig1_buff);
                snprintf_err( sig2_buff, sizeof( sig2_buff), "%.6f", optr->posn_sigma_2);
                remove_insignificant_digits( sig2_buff);
+               strip_trailing_zeroes( sig2_buff);
+               strlcpy_err( buff, "Sigma ", buffsize);
                if( strcmp( sig1_buff, sig2_buff))
                   {
-                  strlcat_err( sig1_buff, "x", sizeof( sig1_buff));
-                  strlcat_err( sig1_buff, sig2_buff, sizeof( sig1_buff));
-                  tilt_angle = (int)( optr->posn_sigma_theta * 180. / PI);
+                  const int tilt_angle =
+                               (int)( optr->posn_sigma_theta * 180. / PI + 0.5) % 180;
+
+                  if( !tilt_angle)  /* PA=0 means sig1 = sigma(dec), sig2 = sigma(RA) */
+                      snprintf_append( buff, buffsize, "%sx%s\" ", sig2_buff, sig1_buff);
+                  else
+                      snprintf_append( buff, buffsize, "%sx%s\" %d ", sig1_buff, sig2_buff, tilt_angle);
                   }
-               snprintf_err( buff, buffsize, "Sigma %s\" ", sig1_buff);
-               if( tilt_angle % 180)
-                  snprintf_append( buff, buffsize, "%d ", tilt_angle);
+               else
+                  snprintf_append( buff, buffsize, "%s\" ", sig1_buff);
                }
          end_ptr = buff + strlen( buff);
-         reference_to_text( end_ptr, optr->reference, optr->jd);
+         reference_to_text( end_ptr, 15, optr->reference, optr->jd);
          if( *end_ptr)
             strlcat_err( buff, "  ", buffsize);
          if( !get_obs_alt_azzes( optr, &sun_alt_az, &object_alt_az))
@@ -5450,6 +5520,9 @@ static int generate_observation_text( const OBSERVE FAR *obs, const int idx,
             *buff = '\0';
          snprintf_append( buff, buffsize, "time sigma %g",
                           optr->time_sigma * seconds_per_day);
+         if( optr->unc_time)
+            snprintf_append( buff, buffsize, "  uncTime %g",
+                          optr->unc_time * seconds_per_day);
          if( optr->ra_bias || optr->dec_bias)
              snprintf_append( buff, buffsize, "  %cRA bias %.3f\" dec bias %.3f\"%c",
                            (apply_debiasing ? ' ' : '['),
@@ -5729,7 +5802,7 @@ int sanity_test_observations( const char *filename)
                   n_problems_found++;
                   }
             override_time = 0.;
-            override_ra = override_dec = -100.;
+            override_ra = override_dec = override_mag = -100.;
             }
       }
    fclose( ifile);

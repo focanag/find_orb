@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include "watdefs.h"
 #include "comets.h"
 #include "afuncs.h"
+#include "constant.h"
 
 /* BC-405 gives orbital elements for 300 large asteroids at 40-day intervals,
 running from JD 2378495.0 = 1799 Dec 30.5 to JD 2524615.0 = 2200 Jan 22.5.
@@ -50,7 +51,7 @@ int detect_perturbers( const double jd, const double * __restrict xyz,
 double *get_asteroid_mass( const int astnum);   /* bc405.cpp */
 int generic_message_box( const char *message, const char *box_type);
 int asteroid_position_raw( const int astnum, const double jd,
-                              double *posn);       /* bc405.cpp */
+                              double *posn, double *vel);      /* bc405.cpp */
 int planet_posn( const int planet_no, const double jd, double *vect_2000);
 FILE *fopen_ext( const char *filename, const char *permits);   /* miscell.cpp */
 const char *get_environment_ptr( const char *env_ptr);     /* mpc_obs.cpp */
@@ -65,12 +66,19 @@ static int bc405_n_asteroids = MAX_BC405_N_ASTEROIDS;
 static double bc405_start_jd = 2378495.;
 static double bc405_chunk_time = 40.;
 
-static FILE *open_bc405_file( void)
+static FILE *open_bc405_file( const bool shutting_down)
 {
    const char *data_file_name = "bc405.dat";
    static FILE *ifile;
    static int failure_detected = 0;
 
+   if( shutting_down)
+      {
+      if( ifile)
+         fclose( ifile);
+      ifile = NULL;
+      return( NULL);
+      }
    if( failure_detected)
       return( NULL);
    if( !ifile)
@@ -133,9 +141,6 @@ static FILE *open_bc405_file( void)
    return( ifile);
 }
 
-#define GAUSS_K .01720209895
-#define SOLAR_GM (GAUSS_K * GAUSS_K)
-
 static void grab_elems( ELEMENTS *elems, FILE *fp, const int chunk_number)
 {
    double array[6];
@@ -165,10 +170,9 @@ static void grab_cached_elems( ELEMENTS *elems, const int chunk_number,
 {
    static int astnums[N_CACHED_ELEMS], chunk_num[N_CACHED_ELEMS];
    static ELEMENTS *cache = NULL;
-   FILE *fp = open_bc405_file( );
+   FILE *fp;
    int i;
 
-   assert( fp);
    if( !elems)
       {
       if( cache)
@@ -178,6 +182,8 @@ static void grab_cached_elems( ELEMENTS *elems, const int chunk_number,
          astnums[i] = chunk_num[i] = -1;
       return;
       }
+   fp = open_bc405_file( false);
+   assert( fp);
    if( !cache)
       cache = (ELEMENTS *)calloc( N_CACHED_ELEMS, sizeof( ELEMENTS));
    assert( cache);
@@ -287,7 +293,7 @@ static int find_and_set_precomputed_data( FILE *precomputed_fp,
                          const int bc_chunk, int16_t *__restrict posns)
 {
    const int chunk_size = bc405_n_asteroids * 3;
-   FILE *bc405_elem_file = open_bc405_file( );
+   FILE *bc405_elem_file = open_bc405_file( false);
    int i;
 
    assert( bc405_elem_file);
@@ -346,6 +352,7 @@ static double *load_asteroid_masses( void)
             if( rval)
                rval[i++] = mass;
             }
+      fclose( ifile);
 /*    rval[0] = 4.747105847157599504245142421641e-10;  (solar masses) */
       }  /* Ceres: special 63 km^3/s^2 value:  not now in use */
          /* since found to be 62.68 km^3/s^2 by Dawn = 4.7229935634e-10 */
@@ -354,19 +361,19 @@ static double *load_asteroid_masses( void)
 }
 
 int asteroid_position_raw( const int astnum, const double jd,
-                              double *posn)
+                              double *posn, double *vel)
 {
    ELEMENTS elem;
    int chunk;
 
-   open_bc405_file( );
+   open_bc405_file( false);
    chunk = (int)( (jd - bc405_start_jd) / bc405_chunk_time + .5);
    if( chunk < 0)
       chunk = 0;
    else if( chunk >= n_bc405_chunks - 1)
       chunk = n_bc405_chunks - 1;
    grab_cached_elems( &elem, chunk, astnum);
-   comet_posn( &elem, jd, posn);
+   comet_posn_and_vel( &elem, jd, posn, vel);
    return( 0);
 }
 
@@ -393,14 +400,14 @@ int detect_perturbers( const double jd, const double * __restrict xyz,
    static FILE *precomputed_fp;
    static bool bc405_available = true;
    static int n_asteroids_to_use = 0;
-   double thresh = atof( get_environment_ptr( "ASTEROID_THRESH"));
+   double thresh;
    int i, load_posn0 = 0, load_posn1 = 0, chunk, n_fixed = 0;
-   const char *fixed_perturber_list = get_environment_ptr( "ASTEROID_PERT_LIST");
+   const char *fixed_perturber_list;
    int fixed_perturbers[MAX_BC405_N_ASTEROIDS];
 
    if( !bc405_available)
       return( NO_BC405_FILE);
-   if( !xyz)
+   if( !xyz)              /* freeing memory, closing cached file pointers */
       {
       if( precomputed_fp)
          fclose( precomputed_fp);
@@ -408,7 +415,12 @@ int detect_perturbers( const double jd, const double * __restrict xyz,
          free( masses);
       precomputed_fp = NULL;
       masses = NULL;
+      open_bc405_file( true);
+      grab_cached_elems( NULL, 0, 0);
+      return( 0);
       }
+   thresh = atof( get_environment_ptr( "ASTEROID_THRESH"));
+   fixed_perturber_list = get_environment_ptr( "ASTEROID_PERT_LIST");
    if( !masses)
       masses = load_asteroid_masses( );
    if( !masses)
@@ -416,7 +428,7 @@ int detect_perturbers( const double jd, const double * __restrict xyz,
       bc405_available = false;
       return( NO_BC405_FILE);
       }
-   if( !open_bc405_file( ))
+   if( !open_bc405_file( false))
       {
       bc405_available = false;
       return( NO_BC405_FILE);
@@ -531,10 +543,9 @@ int detect_perturbers( const double jd, const double * __restrict xyz,
                if( dist2 < .05 * 0.05)
                   {
                   FILE *debug_file = fopen( "astpert.txt", "ab");
-                  const double j2000 = 2451545.;
 
                   fprintf( debug_file, "%.5f: %3d, %f: mass %g\n",
-                           (jd - j2000) / 365.25 + 2000.,
+                           JD_TO_YEAR( jd),
                            asteroid_numbers[i], sqrt( dist2) * AU_IN_KM, masses[i]);
                   fclose( debug_file);
                   }
@@ -583,7 +594,7 @@ int main( const int argc, char **argv)
    const int asteroid_number = atoi( argv[1]);
    const double jd = atof( argv[2]);
    const int chunk_number = (int)( (jd - bc405_start_jd) / bc405_chunk_time + .5);
-   FILE *fp = open_bc405_file( );
+   FILE *fp = open_bc405_file( false);
    ELEMENTS elems;
    double posn[4];
    int16_t precomputed[bc405_n_asteroids * 3];

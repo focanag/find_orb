@@ -27,6 +27,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <unistd.h>
 #endif
 #include "watdefs.h"
+#include "pl_cache.h"
 #include "lunar.h"
 #include "afuncs.h"
 #include "comets.h"
@@ -36,13 +37,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 
 #define ldouble long double
 
-#if defined( __WATCOMC__) || defined( __FreeBSD__)
-#define ceill ceil
-#define expl exp
-#define fabsl fabs
-#define isnanl isnan
-#define powl pow
-#define sqrtl sqrt
+      /* OpenWATCOM lacks all long double functions. */
+#ifdef __WATCOMC__
+#define expl      exp
+#define fabsl     fabs
+#define powl      pow
+#define sqrtl     sqrt
 #endif
 
 /* perturbers
@@ -80,8 +80,6 @@ ldouble take_rk_stepl( const ldouble jd, ELEMENTS *ref_orbit,
 ldouble take_pd89_step( const ldouble jd, ELEMENTS *ref_orbit,
                  const ldouble *ival, ldouble *ovals,
                  const int n_vals, const ldouble step);    /* runge.cpp */
-int symplectic_6( double jd, ELEMENTS *ref_orbit, double *vect,
-                                          const double dt);
 int get_planet_posn_vel( const double jd, const int planet_no,
                      double *posn, double *vel);         /* runge.cpp */
 int find_best_fit_planet( const double jd, const double *ivect,
@@ -98,6 +96,7 @@ int parallax_to_lat_alt( const double rho_cos_phi, const double rho_sin_phi,
        double *lat, double *ht_in_meters, const int planet_idx); /* ephem0.c */
 void calc_approx_planet_orientation( const int planet,        /* runge.cpp */
          const int system_number, const double jde, double *matrix);
+void compute_effective_solar_multiplier( const char *constraints);   /* runge.c */
 double geo_potential_in_au( const double x, const double y, const double z,
                  double *derivs, const int n_terms);    /* geo_pot.c */
 double shadow_check( const double *planet_loc,           /* ephem0.cpp */
@@ -209,20 +208,22 @@ static void vector_cross_productl( ldouble *xprod, const ldouble *a, const ldoub
 #define ATMOSPHERIC_LIMIT (EARTH_RADIUS_IN_AU + 500. / AU_IN_KM)
 /* #define ATMOSPHERIC_LIMIT 0      */
 
-/*  Jupiter field is now from doi:10.1038/nature25776, "Measurement of
-Jupiter's asymmetric gravity field".   Saturn,  Uranus, and Neptune
-fields are from http://ssd.jpl.nasa.gov/?gravity_fields_op .*/
+/*  Jupiter,  Saturn,  Uranus, and Neptune fields are from
+https://ssd.jpl.nasa.gov/tools/gravity.html#/outerplanets .*/
 
-#define J2_IN_JUPITER_UNITS (.0146956572)      /* +/- 1.4e-8 */
-#define J3_IN_JUPITER_UNITS (-0.042e-6)        /* +/- 0.010e-6 */
-#define J4_IN_JUPITER_UNITS (-5.86609e-4)      /* +/- 4e-8 */
+#define J2_IN_JUPITER_UNITS (.014695735)      /* +/- 1.7e-9 */
+#define J3_IN_JUPITER_UNITS (-0.045e-6)        /* +/- 0.0033e-6 */
+#define J4_IN_JUPITER_UNITS (-5.866085e-4)      /* +/- 2.4e-9 */
 #ifdef NOT_USING_ANYTHING_PAST_J4_YET
-   #define J5_IN_JUPITER_UNITS   (-6.9e-8)     /* +/- 0.8e-8 */
-   #define J6_IN_JUPITER_UNITS   34.198e-6     /* +/- 0.9e-8 */
-   #define J7_IN_JUPITER_UNITS   1.24e-7       /* +/- 0.17e-7 */
+   #define J5_IN_JUPITER_UNITS   (-0.0723e-6)     /* +/- 0.0042e-6 */
+   #define J6_IN_JUPITER_UNITS   34.2007e-6     /* +/- 0.0067e-6 */
+   #define J7_IN_JUPITER_UNITS   0.120e-6       /* +/- 0.012e-6 */
+   #define J8_IN_JUPITER_UNITS   (-2.422e-6)    /* +/- 0.021e-6 */
 
-   #define J6_IN_SATURN_UNITS    86.14e-6
-   #define J8_IN_SATURN_UNITS   -10.e-6
+   #define J6_IN_SATURN_UNITS    86.8e-6
+   #define J8_IN_SATURN_UNITS   -13.9e-6
+
+   #define J6_IN_NEPTUNE_UNITS    0.5e-6
 #endif
 #define JUPITER_R (71492. / AU_IN_KM)
 #define JUPITER_R2 (JUPITER_R * JUPITER_R)
@@ -230,25 +231,25 @@ fields are from http://ssd.jpl.nasa.gov/?gravity_fields_op .*/
 #define JUPITER_J3 (J3_IN_JUPITER_UNITS * JUPITER_R2 * JUPITER_R)
 #define JUPITER_J4 (J4_IN_JUPITER_UNITS * JUPITER_R2 * JUPITER_R2)
 
-#define J2_IN_SATURN_UNITS (.01629071)
-#define J4_IN_SATURN_UNITS (-.00093583)
+#define J2_IN_SATURN_UNITS (.0162906)
+#define J4_IN_SATURN_UNITS (-.0009351)
 #define SATURN_R (60330. / AU_IN_KM)
 #define SATURN_R2 (SATURN_R * SATURN_R)
 #define SATURN_J2 (J2_IN_SATURN_UNITS * SATURN_R2)
 #define SATURN_J3 0.
 #define SATURN_J4 (J4_IN_SATURN_UNITS * SATURN_R2 * SATURN_R2)
 
-#define J2_IN_URANUS_UNITS  3510.68e-6
-#define J4_IN_URANUS_UNITS   -34.17e-6
+#define J2_IN_URANUS_UNITS  3510.7e-6
+#define J4_IN_URANUS_UNITS   -34.2e-6
 #define URANUS_R (25559. / AU_IN_KM)
 #define URANUS_R2 (URANUS_R * URANUS_R)
 #define URANUS_J2 (J2_IN_URANUS_UNITS * URANUS_R * URANUS_R)
 #define URANUS_J3 0.
 #define URANUS_J4 (J4_IN_URANUS_UNITS * URANUS_R2 * URANUS_R2)
 
-#define J2_IN_NEPTUNE_UNITS  3408.43e-6
-#define J4_IN_NEPTUNE_UNITS   -33.40e-6
-#define NEPTUNE_R (25225. / AU_IN_KM)
+#define J2_IN_NEPTUNE_UNITS  3536.3e-6
+#define J4_IN_NEPTUNE_UNITS   -36.0e-6
+#define NEPTUNE_R (24764. / AU_IN_KM)
 #define NEPTUNE_R2 (NEPTUNE_R * NEPTUNE_R)
 #define NEPTUNE_J2 (J2_IN_NEPTUNE_UNITS * NEPTUNE_R * NEPTUNE_R)
 #define NEPTUNE_J3 0.
@@ -586,15 +587,8 @@ of the planet's pole doesn't change much over that time scale,
 and we don't want to do a lot of expensive recomputes of planet orientation
 that won't have any noticeable effect.  (It's particularly expensive for
 the earth,  where we do a full-meal-deal precession and nutation matrix.)
-
-   For the earth,  we then rotate the planet to the time jd.  This will be
-needed for handling non-zonal (tesseral) harmonics.  For the other planets,
-we are (at least thus far) just dealing with the zonal terms J2, J3, J4,
-which are spherically symmetrical around the planet's poles;  we just need
-the polar orientation and can ignore rotation.  Though this may not be
-true forever... at some point,  I may want to add tesseral harmonics for,
-say,  the Moon or Mars.  If that happens,  this code will need revising,
-perhaps with a table of omega values. */
+We then rotate the planet from the cached time to the input time jde (again,
+less than half a day).        */
 
 void calc_approx_planet_orientation( const int planet,
          const int system_number, const double jde, double *matrix)
@@ -604,6 +598,7 @@ void calc_approx_planet_orientation( const int planet,
    static int cached_planet = -1;
    const double range = 1.;
    const double new_jde = floor( jde / range + .5) * range;
+   const double omega = planet_rotation_rate( planet, system_number) * PI / 180.;
 
    if( cached_planet != planet || new_jde != cached_jde)
       {
@@ -614,13 +609,7 @@ void calc_approx_planet_orientation( const int planet,
       cached_jde = new_jde;
       }
    memcpy( matrix, cached_matrix, 9 * sizeof( double));
-   if( planet == 3)        /* rotate matrix */
-      {
-      const double omega = 360.9856235 * PI / 180.;
-      const double theta = omega * (jde - cached_jde);
-
-      spin_matrix( matrix, matrix + 3, theta);
-      }
+   spin_matrix( matrix, matrix + 3, omega * (jde - cached_jde));
 }
 
 /* The idea of the following is as follows.  If our distance from the sun
@@ -647,7 +636,7 @@ static ldouble include_thrown_in_planets( const ldouble r)
          if( r > radii[i] * (1. + fraction))
             rval += planet_mass[i];
          else
-            rval += planet_mass[i] * ((1. + fraction) - r / radii[i]) / fraction;
+            rval += planet_mass[i] * (r / radii[i] - 1.) / fraction;
          }
    return( rval);
 }
@@ -740,10 +729,14 @@ static ldouble atmospheric_density( const ldouble ht_in_km)
 }
 
 
-      /* If we're closer than .1 AU,  include Galileans separately: */
+      /* If we're closer than the following distances,  include Galileans */
+      /* or Saturn's satellites or the earth's moon separately,  instead  */
+      /* of just using the system barycenter and its combined mass.  (The */
+      /* earth's moon can be turned on explicitly if so desired.)         */
 
-#define GALILEAN_LIMIT .03
-#define TITAN_LIMIT .03
+#define GALILEAN_LIMIT            .3
+#define SATURN_SATELL_LIMIT       .3
+#define LUNAR_LIMIT               .1
 
 unsigned excluded_perturbers = (unsigned)-1;
 int best_fit_planet;
@@ -810,13 +803,19 @@ static double lagged_dist( const ldouble *state_vect, const ldouble jd,
 {
    double svect[6], outvect[9], rval;
    size_t i;
-   ELEMENTS elem;
 
    for( i = 0; i < 6; i++)
       svect[i] = (double)state_vect[i];
-   find_relative_orbit( (double)jd, svect, &elem, 0);
-   compute_ref_state( &elem, outvect, (double)( jd - lag));
-   rval = vector3_length( outvect);
+   if( !lag)      /* usually the case */
+      rval = vector3_length( svect);
+   else
+      {
+      ELEMENTS elem;
+
+      find_relative_orbit( (double)jd, svect, &elem, 0);
+      compute_ref_state( &elem, outvect, (double)( jd - lag));
+      rval = vector3_length( outvect);
+      }
    return( rval);
 }
 
@@ -825,6 +824,98 @@ static double lagged_dist( const ldouble *state_vect, const ldouble jd,
 static ldouble planet_radius( const int idx)
 {
    return( planet_radius_in_meters( idx) * FUDGE_FACTOR / AU_IN_METERS);
+}
+
+static ldouble solar_multiplier = 1.;
+
+/* If we have constrained an area/mass ratio,  and don't have that as
+a free parameter in the orbit fit,  then the above value will be slightly
+less than 1,  indicating that the object is being slightly pushed away
+from the sun by solar radiation pressure.      */
+
+void compute_effective_solar_multiplier( const char *constraints)
+{
+   extern int force_model;
+   const char *tptr;
+
+   solar_multiplier = 1.;
+   if( constraints)
+      {
+      if( force_model == FORCE_MODEL_NO_NONGRAVS
+               || force_model == FORCE_MODEL_DELTA_V)
+         if( NULL != (tptr = strstr( constraints, "A=")))
+            solar_multiplier = 1. - atof( tptr + 2) * SRP1AU / SOLAR_GM;
+      }
+}
+
+/* We initially compute the barycenters for all planets.  If we
+are close enough to the earth,  Jupiter,  or Saturn,  we may then need
+to instead treat them as separate objects.  This requires shifting
+the barycenter to the planet center location,  and then expressing
+the satellite positions relative to that planet center.
+
+   planet_loc initially contains the system barycentric location,
+sat_locs the (planet-centric) satellite locations.  The first loop
+shifts the planet location from the barycenter to the actual location
+of the planet.  The second loop shifts the satellite locations from
+planet-centric to heliocentric.     */
+
+static void set_satellite_and_planet_locs( const size_t n_sats,
+            double *sat_locs, double *planet_loc, const double *masses,
+            const double system_mass)
+{
+   size_t i, j;
+
+   for( i = 0; i < n_sats; i++)
+      {
+      const double mass_ratio = masses[i] / system_mass;
+
+      for( j = 0; j < 3; j++)
+         planet_loc[j] -= sat_locs[i * 3 + j] * mass_ratio;
+      }
+   for( i = 0; i < n_sats; i++)
+      for( j = 0; j < 3; j++, sat_locs++)
+         *sat_locs += planet_loc[j];
+}
+
+static void get_saturn_sats( const double jd, double *ssat_locs,
+                                    double *saturn_loc)
+{
+   int i;
+
+   for( i = 0; i < 5; i++)
+      calc_ssat_loc( jd, ssat_locs + i * 3,
+                  (i == 4 ? 7 : i + 2), 0L);        /* we skip Hyperion */
+   set_satellite_and_planet_locs( 5, ssat_locs, saturn_loc, planet_mass + 15,
+                  MASS_SATURN_SYSTEM);
+}
+
+static void get_galilean_sats( const double jd, double *jsat_locs,
+                                    double *jupiter_loc)
+{
+   double precess_matrix[10];
+   const double t_years = (jd - J2000) / 365.25;
+   const double obliquity = mean_obliquity( t_years / 100.);
+   size_t i, j;
+
+   setup_precession( precess_matrix, 2000. + t_years, 2000.);
+   calc_jsat_loc( jd, jsat_locs, 15, 0L);
+   assert( PI != jsat_locs[0]);
+   for( i = 0; i < 4; i++)
+      {
+      double tloc[3];
+
+                        /* turn ecliptic of date to equatorial: */
+      rotate_vector( jsat_locs + i * 3, obliquity, 0);
+                        /* then to equatorial J2000: */
+      precess_vector( precess_matrix, jsat_locs + i * 3, tloc);
+                        /* then to ecliptic J2000: */
+      equatorial_to_ecliptic( tloc);
+      for( j = 0; j < 3; j++)       /* then from units of Jupiter radii */
+         jsat_locs[i * 3 + j] = tloc[j] * JUPITER_R;            /* to AU */
+      }
+   set_satellite_and_planet_locs( 4, jsat_locs, jupiter_loc, planet_mass + 11,
+                  MASS_JUPITER_SYSTEM);
 }
 
 int planet_hit = -1;
@@ -836,7 +927,8 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
    ldouble accel_multiplier = 1.;
    int i, j;
    unsigned local_perturbers = perturbers;
-   double lunar_loc[3], jupiter_loc[3], saturn_loc[3];
+   double lunar_loc[3], jsat_loc[12], ssat_loc[15];
+   double reference_planet_posn[3];
    ldouble relativistic_accel[3];
    double fraction_illum = 1., ival_as_double[3];
    extern int force_model;
@@ -848,19 +940,19 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
    assert( fabsl( jd) < 1e+9);
 #if !defined( _WIN32) && !defined( __APPLE__)
    for( i = 0; i < 6; i++)
-      if( isnanl( ival[i]))
+      if( isnan( (double)ival[i]))
          {
          debug_printf( "Bad derivs; jd %Lf; ref %d\n", jd, reference_planet);
          debug_printf( "%Lf %Lf %Lf\n", ival[0], ival[1], ival[2]);
          debug_printf( "%Lf %Lf %Lf\n", ival[3], ival[4], ival[5]);
          assert( 0);
          }
-   assert( !isnanl( ival[0]));
-   assert( !isnanl( ival[1]));
-   assert( !isnanl( ival[2]));
-   assert( !isnanl( ival[3]));
-   assert( !isnanl( ival[4]));
-   assert( !isnanl( ival[5]));
+   assert( !isnan( (double)ival[0]));
+   assert( !isnan( (double)ival[1]));
+   assert( !isnan( (double)ival[2]));
+   assert( !isnan( (double)ival[3]));
+   assert( !isnan( (double)ival[4]));
+   assert( !isnan( (double)ival[5]));
 #endif
    oval[0] = ival[3];
    oval[1] = ival[4];
@@ -896,6 +988,7 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
       }
 
    solar_accel *= -SOLAR_GM / (r2 * r);
+   solar_accel *= solar_multiplier;
 
    if( perturbers)
       set_relativistic_accel( relativistic_accel, ival);
@@ -921,14 +1014,15 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
             oval[i] += asteroid_accel[i];
          }
 
-   if( (n_orbit_params >= 8 && n_orbit_params <= 10) || force_model == FORCE_MODEL_YARKO_A2)
+   if( (n_orbit_params >= 8 && n_orbit_params <= 10 && force_model != FORCE_MODEL_DELTA_V)
+                              || force_model == FORCE_MODEL_YARKO_A2)
       {                  /* Marsden & Sekanina comet formula */
       const ldouble lag = (n_orbit_params == 10 ? ival[9] : 0.);
       const ldouble g = comet_g_func( lagged_dist( ival, jd, lag)) * fraction_illum;
       ldouble transverse[3], dot_prod = 0.;
 
 #if !defined( _WIN32) && !defined( __APPLE__)
-      assert( !isnanl( g));
+      assert( !isnan( (double)g));
 #endif
       memcpy( transverse, ival + 3, 3 * sizeof( ldouble));
       for( i = 0; i < 3; i++)
@@ -953,96 +1047,69 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
             oval[i + 3] += g * ival[8] * out_of_plane[i] / dot_prod;
          }
       }
+   if( reference_planet >= 0)
+      get_planet_posn_vel( jd, reference_planet, reference_planet_posn, NULL);
 
    if( perturbers)
       for( i = 1; i < N_PERTURB + 1; i++)
          if( ((local_perturbers >> i) & 1)
                    && !((excluded_perturbers >> i) & 1))
             {
-            double planet_loc[15], accel[3], mass_to_use = planet_mass[i];
+            double planet_loc[3], accel[3], mass_to_use = planet_mass[i];
+            bool position_shifted = false;
 
-            r = r2 = 0.;
-            if( i >= IDX_IO)       /* Galileans,  Titan */
-               {
-               double matrix[10], sat_loc[15];
-               const double t_years = (jd - J2000) / 365.25;
-
-               if( i >= IDX_TETHYS)         /* Saturnian satell */
-                  calc_ssat_loc( jd, sat_loc,
-                               ((i == IDX_IAPETUS) ? 7 : i - 13), 0L);
-               else
-                  {
-                  calc_jsat_loc( jd, sat_loc, 1 << (i - IDX_IO), 0L);
-                  memmove( sat_loc, sat_loc + (i - IDX_IO) * 3,
-                                                      3 * sizeof( double));
-                  }
-                                 /* turn ecliptic of date to equatorial: */
-               rotate_vector( sat_loc, mean_obliquity( t_years / 100.), 0);
-                                 /* then to equatorial J2000: */
-               setup_precession( matrix, 2000. + t_years, 2000.);
-               precess_vector( matrix, sat_loc, planet_loc + 12);
-                                 /* then to ecliptic J2000: */
-               equatorial_to_ecliptic( planet_loc + 12);
-               for( j = 0; j < 3; j++)
-                  {
-                  double coord;
-
-                  if( i >= IDX_TETHYS)         /* Saturnian */
-                     coord = saturn_loc[j] + planet_loc[12 + j];
-                  else
-                     coord = jupiter_loc[j] + planet_loc[12 + j] * JUPITER_R;
-                  r2 += coord * coord;
-                  planet_loc[12 + j] = coord;
-                  }
-               planet_loc[2] = sqrt( r2);
-               }
+            if( i >= IDX_IO && i <= IDX_CALLISTO)  /* Galileans */
+               memcpy( planet_loc, jsat_loc + (i - IDX_IO) * 3, 3 * sizeof( double));
+            else if( i >= IDX_TETHYS && i <= IDX_IAPETUS)
+               memcpy( planet_loc, ssat_loc + (i - IDX_TETHYS) * 3, 3 * sizeof( double));
+            else if( i == IDX_MOON)
+               memcpy( planet_loc, lunar_loc, 3 * sizeof( double));
             else
-               {
-               if( local_perturbers & 1024)   /* if the moon is included */
-                  {
-                  if( i == 3)
-                     earth_lunar_posn( jd, planet_loc, lunar_loc);
-                  else if( i == 10)
-                     memcpy( planet_loc, lunar_loc, 3 * sizeof( double));
-                  else
-                     planet_posn( i, jd, planet_loc);
-                  }
-               else
-                  planet_posn( i, jd, planet_loc);
-
-               for( j = 0; j < 3; j++)
-                  r2 += planet_loc[j] * planet_loc[j];
-               memcpy( planet_loc + 12, planet_loc, 3 * sizeof( double));
-               planet_loc[2] = sqrt( r2);
-               }
+               planet_posn( i, jd, planet_loc);
 
             for( j = 0; j < 3; j++)
-               {
-               accel[j] = ival[j] - planet_loc[12 + j];
-               r += accel[j] * accel[j];
-               }
-            r = sqrt( r);
+               accel[j] = ival[j] - planet_loc[j];
+            r = vector3_length( accel);
 
             if( i == IDX_JUPITER)
                {
                if( r < GALILEAN_LIMIT)
                   {
-                  memcpy( jupiter_loc, planet_loc + 12, 3 * sizeof( double));
                   local_perturbers |= (15 << 11);
+                  get_galilean_sats( jd, jsat_loc, planet_loc);
+                  position_shifted = true;
                   }
                else     /* "throw" Galileans into Jupiter: */
                   mass_to_use = MASS_JUPITER_SYSTEM;
                }
-
-            if( i == IDX_SATURN)
+            else if( i == IDX_SATURN)
                {
-               if( r < TITAN_LIMIT)
+               if( r < SATURN_SATELL_LIMIT)
                   {
-                  memcpy( saturn_loc, planet_loc + 12, 3 * sizeof( double));
                   local_perturbers |= (31 << 15);
+                  get_saturn_sats( jd, ssat_loc, planet_loc);
+                  position_shifted = true;
                   }
                else        /* "throw" saturn's satellites into the primary: */
                   mass_to_use = MASS_SATURN_SYSTEM;
+               }
+            else if( i == IDX_EARTH)
+               {
+               if( r < LUNAR_LIMIT || (local_perturbers & 1024))
+                  {
+                  earth_lunar_posn( jd, planet_loc, lunar_loc);
+                  local_perturbers |= 1024;
+                  position_shifted = true;
+                  }
+               else           /* use combined earth/moon barycentre */
+                  mass_to_use = MASS_EARTH + MASS_MOON;
+               }
+
+            if( position_shifted)
+               {
+               for( j = 0; j < 3; j++)
+                  accel[j] = ival[j] - planet_loc[j];
+               r = vector3_length( accel);
                }
 
             if( r < planet_radius( i))
@@ -1056,8 +1123,8 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
                   return( planet_hit);
                   }
                }
-            if( i >= IDX_EARTH && i <= IDX_NEPTUNE && r < .015 && j2_multiplier)
-               {          /* Within .015 AU,  we take J2 into account: */
+            if( i >= IDX_EARTH && i <= IDX_NEPTUNE && r < .05 && j2_multiplier)
+               {          /* Within .05 AU,  we take J2 into account: */
                double grad[3], delta_j2000[3], matrix[10], delta_planet[3];
                const double j2[6] = { EARTH_J2, MARS_J2, JUPITER_J2,
                         SATURN_J2, URANUS_J2, NEPTUNE_J2 };
@@ -1091,7 +1158,6 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
                if( i == IDX_EARTH && r < ATMOSPHERIC_LIMIT && n_orbit_params == 7
                            && *get_environment_ptr( "DRAG_SHUTOFF") != '1')
                   {
-                  const double SRP1AU = 2.3e-7;   /* kg*AU^3 / (m^2*d^2) */
                   const double amr_drag = ival[6] * SOLAR_GM / SRP1AU;
                   const double rho_cos_phi =
                           hypot( delta_planet[0], delta_planet[1]) / EARTH_RADIUS_IN_AU;
@@ -1124,7 +1190,7 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
                   equatorial_to_ecliptic( vel);
                   for( j = 0; j < 3; j++)
                      {
-                     const double earth_vel = (earth_loc[j] - planet_loc[j + 12]) / dt;
+                     const double earth_vel = (earth_loc[j] - planet_loc[j]) / dt;
 
                      vel[j] += earth_vel - oval[j];       /* in AU/day */
                      vel[j] *= AU_IN_METERS / seconds_per_day;  /* cvt to m/s */
@@ -1161,31 +1227,24 @@ int calc_derivativesl( const ldouble jd, const ldouble *ival, ldouble *oval,
                for( j = 0; j < 3; j++)
                   oval[j + 3] += accel_factor * accel[j];
                }
-            if( i != reference_planet)
+            if( i != reference_planet || (position_shifted && i >= 5))
                {
                if( reference_planet >= 0)
-                  {
-                  double planet_posn[3];
-
-                  get_planet_posn_vel( jd, reference_planet, planet_posn, NULL);
                   for( j = 0; j < 3; j++)
-                     planet_loc[j + 12] -= planet_posn[j];
-                  r = vector3_length( planet_loc + 12);
-                  }
-               else
-                  r = planet_loc[2];
-               if( r)
-                   r = -SOLAR_GM * mass_to_use / (r * r * r);
+                     planet_loc[j] -= reference_planet_posn[j];
+               r = vector3_length( planet_loc);
+               assert( r);
+               r = -SOLAR_GM * mass_to_use / (r * r * r);
                for( j = 0; j < 3; j++)
-                  oval[j + 3] += r * planet_loc[j + 12];
+                  oval[j + 3] += r * planet_loc[j];
                }
             else        /* subtract sun's attraction to reference planet */
                {
-               r = planet_loc[2];
-               if( r)
-                   r = SOLAR_GM / (r * r * r);
+               r = vector3_length( planet_loc);
+               assert( r);
+               r = SOLAR_GM / (r * r * r);
                for( j = 0; j < 3; j++)
-                  oval[j + 3] += r * planet_loc[j + 12];
+                  oval[j + 3] += r * planet_loc[j];
                }
             }
    if( planet_hit != -1)
@@ -1202,6 +1261,7 @@ int calc_derivatives( const double jd, const double *ival, double *oval,
    ldouble ival1[MAX_N_PARAMS], oval1[MAX_N_PARAMS];
 
    assert( fabs( (double)jd) < 1e+9);
+   assert( n_orbit_params >= 6);
    for( i = 0; i < (size_t)n_orbit_params; i++)
       ival1[i] = (ldouble)ival[i];
    rval = calc_derivativesl( (ldouble)jd, ival1, oval1, reference_planet);
@@ -1210,36 +1270,39 @@ int calc_derivatives( const double jd, const double *ival, double *oval,
    return( rval);
 }
 
+int earth_lunar_vel( const double jd, double FAR *earth_loc, double FAR *lunar_loc);
+
 int get_planet_posn_vel( const double jd, const int planet_no,
                      double *posn, double *vel)
 {
    assert( fabs( jd) < 1e+9);
-   if( posn)
+   if( !planet_no)
       {
-      if( !planet_no)       /* sun doesn't move in the heliocentric frame */
+      if( posn)       /* sun doesn't move in the heliocentric frame */
          memset( posn, 0, 3 * sizeof( double));
-      else if( planet_no == 3)
-         earth_lunar_posn( jd, posn, NULL);
-      else if( planet_no == 10)
-         earth_lunar_posn( jd, NULL, posn);
-      else
-         planet_posn( planet_no, jd, posn);
-      }
-   if( vel)
-      {
-      if( !planet_no)       /* sun doesn't move in the heliocentric frame */
+      if( vel)
          memset( vel, 0, 3 * sizeof( double));
-      else
-         {
-         int i;
-         double loc1[3], loc2[3];
-         const double delta = 1. / minutes_per_day;    /* one minute delta... */
-
-         get_planet_posn_vel( jd + delta, planet_no, loc2, NULL);
-         get_planet_posn_vel( jd - delta, planet_no, loc1, NULL);
-         for( i = 0; i < 3; i++)
-            vel[i] = (loc2[i] - loc1[i]) / (2. * delta);
-         }
+      }
+   else if( planet_no == 3)
+      {
+      if( posn)
+         earth_lunar_posn( jd, posn, NULL);
+      if( vel)
+         earth_lunar_vel( jd, vel, NULL);
+      }
+   else if( planet_no == 10)
+      {
+      if( posn)
+         earth_lunar_posn( jd, NULL, posn);
+      if( vel)
+         earth_lunar_vel( jd, NULL, vel);
+      }
+   else
+      {
+      if( posn)
+         planet_posn( planet_no, jd, posn);
+      if( vel)
+         planet_posn( planet_no + PLANET_POSN_VELOCITY_OFFSET, jd, vel);
       }
    return( 0);
 }
@@ -1742,32 +1805,23 @@ ldouble take_rk_stepl( const ldouble jd, ELEMENTS *ref_orbit,
    return( sqrtl( rval * step * step));
 }
 
-int symplectic_6( double jd, ELEMENTS *ref_orbit, double *vect,
-                                          const double dt)
+#define W1  -1.17767998417887
+#define W2  0.235573213359357
+#define W3  0.784513610477560
+#define W0  (1-2*(W1+W2+W3))
+
+int symplectic_6( ldouble jd, ELEMENTS *ref_orbit, ldouble *vect,
+                                          const ldouble dt)
 {
    int i, j;
-#ifdef FOR_REFERENCE_ONLY
-         /* Some compilers object to mathematically defined consts,  so  */
-         /* I had to replace these lines with explicit numerical consts: */
-   const double w1 = -0.117767998417887E1;
-   const double w2 = 0.235573213359357E0;
-   const double w3 = 0.784513610477560E0;
-   const double w0 = (1-2*(w1+w2+w3));
-   const double d6[7] = { w3, w2, w1, w0, w1, w2, w3 };
-   const double c6[8] = { w3/2, (w3+w2)/2, (w2+w1)/2, (w1+w0)/2,
-                         (w1+w0)/2, (w2+w1)/2, (w3+w2)/2, w3/2 };
-#endif
-   static const double d6[7] = { 0.7845136104775600,  0.2355732133593570,
-            -1.1776799841788700, 1.3151863206839060, -1.1776799841788700,
-             0.2355732133593570, 0.7845136104775600 };
-   static const double c6[8] = { 0.3922568052387800,  0.5100434119184585,
-            -0.4710533854097566, 0.0687531682525180,  0.0687531682525180,
-            -0.4710533854097566, 0.5100434119184585,  0.3922568052387800 };
+   const ldouble d6[7] = { W3, W2, W1, W0, W1, W2, W3 };
+   const ldouble c6[8] = { W3/2, (W3+W2)/2, (W2+W1)/2, (W1+W0)/2,
+                         (W1+W0)/2, (W2+W1)/2, (W3+W2)/2, W3/2 };
 
    for( i = 0; i < 8; i++)
       {
-      double deriv[6];
-      const double step = dt * c6[i];
+      ldouble deriv[6];
+      const ldouble step = dt * c6[i];
 
       for( j = 0; j < 3; j++)
          vect[j] += step * vect[j + 3];
@@ -1775,11 +1829,12 @@ int symplectic_6( double jd, ELEMENTS *ref_orbit, double *vect,
       if( i != 7)
          {
          assert( fabs( jd) < 1e+9);
-         calc_derivatives( jd, vect, deriv, ref_orbit->central_obj);
+         for( j = 3; j < 6; j++)
+            deriv[j] = 0.;
+         calc_derivativesl( jd, vect, deriv, ref_orbit->central_obj);
          for( j = 3; j < 6; j++)
             vect[j] += dt * d6[i] * deriv[j];
          }
       }
    return( 0);
 }
-

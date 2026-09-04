@@ -63,7 +63,7 @@ doing a sufficiently exhaustive search in such cases. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
+#include "assert2.h"
 #include <math.h>
 #include <ctype.h>
 #include <time.h>
@@ -71,6 +71,7 @@ doing a sufficiently exhaustive search in such cases. */
 #include "date.h"
 #include "norad.h"
 #include "lsquare.h"
+#include "stringex.h"
 #include "afuncs.h"
 
 #define AU_IN_KM 1.495978707e+8
@@ -81,6 +82,10 @@ doing a sufficiently exhaustive search in such cases. */
 #define FIT_BSTAR    1
 #define FIT_EPOCH    2
 #define FIT_BOTH     3
+
+         /* from 'norad_in.h' */
+#define earth_radius_in_km           6378.135
+#define xke                             0.0743669161331734132
 
 int vector_to_tle( tle_t *tle, const double *state_vect, const double epoch);
 
@@ -272,10 +277,10 @@ static char *fgets_trimmed( char *buff, const size_t buffsize, FILE *ifile)
 
    if( rval)
       {
-      size_t i = 0;
+      size_t i = strlen( rval);
 
-      while( rval[i] != 10 && rval[i] != 13 && rval[i])
-         i++;
+      while( i && rval[i - 1] <= ' ')
+         i--;
       rval[i] = '\0';
       }
    return( rval);
@@ -489,6 +494,40 @@ static FILE *fopen_from_findorb_dir( const char *filename, const char *permits)
    return( rval);
 }
 
+static int auto_set_desigs( char *intl_desig)
+{
+   FILE *ifile = fopen( "/home/phred/tles/tle_list.txt", "rb");
+   char buff[200], curr_id[30];
+
+   assert( ifile);
+   while( fgets( buff, sizeof( buff), ifile))
+      if( !memcmp( buff, "# ID: ", 6))
+         strlcpy_error( curr_id, buff);
+      else if( !memcmp( buff, "  note : end curr artsats", 25))
+         {
+         const int new_norad = atoi( curr_id + 6) - 1;
+         size_t i = 7;
+
+         fclose( ifile);
+         memcpy( intl_desig, curr_id + 13, 8);
+         intl_desig[8] = '\0';
+         do {
+            if( intl_desig[i] == 'P')          /* skip O */
+               intl_desig[i] = 'N';
+            else if( intl_desig[i] == 'J')     /* skip I */
+               intl_desig[i] = 'H';
+            else if( intl_desig[i] == 'A')     /* rotate back to Z */
+               intl_desig[i] = 'Z';
+            else
+               intl_desig[i]--;
+            } while( intl_desig[i--] == 'Z');
+         printf( "Desigs set to '%d', '%s'\n", new_norad, intl_desig);
+         return( new_norad);
+         }
+   assert( 0);       /* we shouldn't get here */
+}
+
+
 /* Certain objects have names (preliminary designations from surveys),  but
 no NORAD or international designation.  The following ensures they get one,
 which won't (we lightheartedly hope) conflict with other designations.  The
@@ -533,20 +572,20 @@ int main( const int argc, const char **argv)
 {
    FILE *ifile = fopen_from_findorb_dir( "eph2tle.txt", "rb");
    FILE *ofile = stdout;
-   int i, j, count = 0, output_freq = 10, line = 0;
+   int i, j, output_freq = 10, line = 0;
    int tles_written = 0;
    int n_params = 6, n_iterations = 15;
    const int max_n_params = 8;
    char buff[200], obj_name[100];
-   const char *default_intl_desig = "00000", *norad_desig = "99999";
-   const char *intl_desig = default_intl_desig;
+   const char *default_intl_desig = "00000A";
+   char intl_desig[9];
    double *slopes = (double *)calloc( max_n_params * 6, sizeof( double));
    double *vectors, worst_resid_in_run = 0., worst_mjd = 0.;
    double tdt = 0., *computed_vects;
    int ephem, progress_bar_freq = 2, ref_frame = -1;
    int epoch_index = -1;
    tle_t tle;
-   const time_t t0 = time( NULL);
+   const time_t curr_t = time( NULL);
    bool use_precession = true, archival = false;
    double step;
    unsigned n_steps, total_lines;
@@ -555,20 +594,25 @@ int main( const int argc, const char **argv)
    double levenberg_marquardt_lambda0 = 0.;
    double sum_of_worst_resids = 0.;
    double dist_units = 1., time_units = 1.;
+   double lowest_perigee = 1e+10, lowest_perigee_jd = 0.;
    const char *search_dist = NULL;
    long end_of_header_offset = 0L;
 
    if( argc < 2)
       error_exit( -1);
-
+   strlcpy_error( intl_desig, default_intl_desig);
    setvbuf( stdout, NULL, _IONBF, 0);
    memset( &tle, 0, sizeof( tle_t));
+   tle.norad_number = 99999;
    tle.classification = 'U';
    tle.ephemeris_type = EPHEM_TYPE_DEFAULT;
-   tle.bulletin_number = (int)( t0 / seconds_per_day - BULLETIN_EPOCH);
+   tle.bulletin_number = (int)( curr_t / seconds_per_day - BULLETIN_EPOCH);
    *obj_name = '\0';
    for( i = 1; i < argc; i++)
       if( argv[i][0] == '-')
+         {
+         const char *param = argv[i] + 2;
+
          switch( argv[i][1])
             {
             case 'a': case 'A':
@@ -621,10 +665,13 @@ int main( const int argc, const char **argv)
                output_freq = atoi( argv[i] + 2);
                break;
             case 'n': case 'N':
-               norad_desig = argv[i] + 2;
+               if( *param == 'a' && !param[1])
+                  tle.norad_number = auto_set_desigs( intl_desig);
+               else
+                  tle.norad_number = atoi( param);
                break;
             case 'i': case 'I':
-               intl_desig = argv[i] + 2;
+               strlcpy_error( intl_desig, argv[i] + 2);
                break;
             case 'l': case 'L':
                sscanf( argv[i] + 2, "%lf", &levenberg_marquardt_lambda0);
@@ -657,11 +704,11 @@ int main( const int argc, const char **argv)
                printf( "'%s' is not a valid command line option\n", argv[i]);
                error_exit( -2);
             }
+         }
 
    vectors = (double *)calloc( 12 * output_freq, sizeof( double));
    assert( vectors);
    computed_vects = vectors + 6 * output_freq;
-   tle.norad_number = atoi( norad_desig);
    strcpy( tle.intl_desig, intl_desig);
    if( !ifile)
       {
@@ -669,7 +716,7 @@ int main( const int argc, const char **argv)
       error_exit( -4);
       }
    fprintf( ofile, "# Made by eph2tle, compiled " __DATE__ " " __TIME__ "\n");
-   fprintf( ofile, "# Run at %s#\n", ctime( &t0));
+   fprintf( ofile, "# Run at %.24s UTC\n#\n", asctime( gmtime( &curr_t)));
    if( archival)
       fprintf( ofile, "# No updates     (archival TLEs)\n");
    if( search_dist)
@@ -696,10 +743,10 @@ int main( const int argc, const char **argv)
    if( fgets_trimmed( buff, sizeof( buff), ifile))
       {
       bool writing_data = false;
-      double mjdt;
+      double mjdt, mjdt_end;
       char *tptr = strstr( buff, "(500) Geocentric: ");
 
-      while( *buff == ';')       /* skip leading comments,  if any */
+      while( *buff == ';' || *buff == '#')       /* skip leading comments,  if any */
          if( !fgets_trimmed( buff, sizeof( buff), ifile))
             {
             fprintf( stderr, "Nothing but comments in '%s'\n", argv[1]);
@@ -721,16 +768,17 @@ int main( const int argc, const char **argv)
          ref_frame = 0;
          }
       mjdt = tdt - 2400000.5;
+      mjdt_end = mjdt + step * (double)( total_lines - total_lines % output_freq);
       if( tptr && !*obj_name)
          strcpy( obj_name, tptr + 18);
       fprintf( ofile, "# Ephem range: %f %f %f\n",
-            mjdt, mjdt + step * (double)total_lines, step * (double)output_freq);
+            mjdt, mjdt_end, step * (double)output_freq);
       while( fgets_trimmed( buff, sizeof( buff), ifile))
          {
          if( !memcmp( buff, "Created ", 8))
             writing_data = true;
          if( writing_data && *buff != '#')
-            fprintf( ofile, "# %s\n", buff);
+            fprintf( ofile, (*buff ? "# %s\n" : "#%s\n"), buff);
          if( !memcmp( buff, "Orbital elements: ", 18) && !*obj_name)
             strcpy( obj_name, buff + 19);
          if( !memcmp( buff, "Ephemeris", 9))
@@ -745,7 +793,7 @@ int main( const int argc, const char **argv)
             if( tptr)
                tle.norad_number = atoi( tptr + 6);
             }
-         if( intl_desig == default_intl_desig)
+         if( !strcmp( intl_desig, default_intl_desig))
             for( tptr = obj_name; *tptr; tptr++)
                if( atoi( tptr) > 1900 && tptr[4] == '-' &&
                      atoi( tptr + 5) > 0)
@@ -787,9 +835,8 @@ int main( const int argc, const char **argv)
       for( i = 0; i < output_freq && fgets( buff, sizeof( buff), ifile);
                                                       i++, sptr += 6)
          {
-         double jdt, jd_utc;
+         double jdt, utc;
          double precession_matrix[9], ivect[6];
-         size_t j;
 
          if( sscanf( buff, "%lf%lf%lf%lf%lf%lf%lf", &jdt,
                         ivect, ivect + 1, ivect + 2,
@@ -805,7 +852,7 @@ int main( const int argc, const char **argv)
             fprintf( stderr, "JDT %f is outside the valid range\n", jdt);
             return( -3);
             }
-         jd_utc = jdt - td_minus_utc( jdt) / seconds_per_day;
+         utc = jdt - td_minus_utc( jdt) / seconds_per_day;
          for( j = 0; j < 6; j++)
             ivect[j] /= dist_units;
          for( j = 3; j < 6; j++)
@@ -817,7 +864,7 @@ int main( const int argc, const char **argv)
             }
          if( use_precession)
             setup_precession( precession_matrix, 2000.,
-                                      2000. + (jd_utc - 2451545.) / 365.25);
+                                      2000. + (utc - 2451545.) / 365.25);
          else
             set_identity_matrix( precession_matrix);
          precess_vector( precession_matrix, ivect, sptr);
@@ -994,11 +1041,28 @@ int main( const int argc, const char **argv)
                     FULL_CTIME_YMD | FULL_CTIME_FORMAT_HH_MM);
 //    if( !failure)
          {
+         const double revs_per_day = tle_to_output.xno * minutes_per_day / (2. * PI);
+
+         if( tle.ephemeris_type != EPHEM_TYPE_HIGH)
+            {
+            const double semimajor_axis =
+                pow( xke / tle_to_output.xno, 2. / 3.) * earth_radius_in_km;
+            const double perigee = semimajor_axis * (1. - tle_to_output.eo);
+
+            if( lowest_perigee > perigee)
+               {
+               lowest_perigee = perigee;
+               lowest_perigee_jd = tdt;
+               }
+            }
 //       if( tle.ephemeris_type != EPHEM_TYPE_HIGH)
             fprintf( ofile, "\n# Worst residual: %.2f km\n",
                           worst_resid);
 //       else
 //          fprintf( ofile, "\n");
+
+         assert( tle.ephemeris_type == EPHEM_TYPE_HIGH
+                  || revs_per_day < 20.);  /* allows some margin for suborbital TLEs */
          write_elements_in_tle_format( obuff, &tle_to_output);
          if( verbose)
             {
@@ -1030,9 +1094,7 @@ int main( const int argc, const char **argv)
 //    else
 //       fprintf( ofile, "FAILED (%d) for JD %.2f = %s\n", failure,
 //                      jd_utc, buff);
-      count = -1;
       tles_written++;
-      count++;
       line++;
       if( ofile != stdout && !(line % progress_bar_freq))
          {
@@ -1074,10 +1136,15 @@ int main( const int argc, const char **argv)
       else
          break;
       }
-   printf( "Freeing vectors\n");
+   lowest_perigee -= earth_radius_in_km;
+   if( lowest_perigee < 150.)
+      {
+      full_ctime( buff, lowest_perigee_jd,
+                    FULL_CTIME_YMD | FULL_CTIME_FORMAT_HH_MM);
+      fprintf( stderr, "LOWEST PERIGEE = %.1f km at %s\n", lowest_perigee, buff);
+      }
    free( vectors);
    free( slopes);
-   printf( "All done\n");
    return( 0);
 }
 

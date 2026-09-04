@@ -130,11 +130,11 @@
 22      All Perturbers Off
 
 900     English
-901     French
-902     Italian
-903     Russian
-904     Spanish
-905     German
+901     Français
+902     Italiano
+903     русский
+904     Español
+905     Deutsch
 
 # months
 1000    January
@@ -194,10 +194,7 @@
 
 2009    %u observations were duplicates.  They have been removed.
 
-2010    %u satellite observations had incorrect offset data.  The file
-2010    'debug.txt' may have further information.  These observations
-2010    have been excluded.  See https://www.projectpluto.com/sc_obs.htm
-2010    for more information.
+2010    See https://www.projectpluto.com/sc_obs.htm FMI.
 
 2011    %u observations were incorrectly formatted.  These observations
 2011    will be ignored.
@@ -265,8 +262,9 @@
 2030    https://www.projectpluto.com/find_orb.htm#de_eph for more info.
 
 2031    F Select file containing astrometry
-2031    C Copy astrometry from clipboard
 2031    N Give object name and get data from MPC
+2031    C Copy astrometry from clipboard
+2031    S Copy astrometry from selection
 
 2033    Use arrow keys to select object,  then hit the space bar or Enter (or use mouse)
 
@@ -277,11 +275,11 @@
 2034    Cancel
 
 2035    English
-2035    French
-2035    Italian
-2035    Russian
-2035    Spanish
-2035    German
+2035    Français
+2035    Italiano
+2035    русский
+2035    Español
+2035    Deutsch
 
 2036    Help about this dialog
 2036    Select file of observations
@@ -353,6 +351,7 @@
 2060    5 ( ) Comet model (A1, A2, A3)
 2060    6 ( ) Comet model (A1, A2, A3, DT)
 2060    7 ( ) Yarkovsky (A2-only)
+2060    8 ( ) Delta-V
 2060    Cancel
 
 2062    0 ( ) Resids in RA/dec arcsec
@@ -384,10 +383,35 @@
 2070    3 ( ) Times in MJD DDDDD.DDDDDD
 2070    Cancel
 
-2072    At least one observation,  made at %s from (%s),
-2072    has an uncertainty in %s that is less than its precision.
-2072    This doesn't make sense, and indicates something's wrong with
-2072    the data or with its uncertainty.  See
-2072    https://www.projectpluto.com/errors.htm#precision
-2072    for further discussion.  Be warned that there may be other errors.
-2072    Find_Orb will only warn you about the first one it finds.
+2074    Temporary designations must include only alphanumeric characters or
+2074    '-' or underscores.  The designation '%s' would be rejected by MPC.
+
+2076    Clipboard is empty!
+
+2078    0 ( ) "/min = '/hr
+2078    1 ( ) "/sec = '/min = deg/hour
+2078    2 ( ) '/sec = deg/min
+2078    3 ( ) '/day
+2078    4 ( ) d/day
+2078    Cancel
+
+2080    No MPC astrometry found for object '%s'.  This may be
+2080    an unused or incorrectly formatted designation,  or MPC
+2080    may simply not have data for it.
+
+2090    %d satellite offsets had no errors\n
+2091    %d satellite offsets had incorrect signs\n
+2092    %d had no number(s) or garbled number(s)\n
+2093    %d satellite offsets had no decimal point\n
+2094    %d satellite offsets had a misplaced decimal point\n
+2095    %d satellite offsets had undeciphered offsets\n
+2096    %d satellite offsets were at the geocenter\n
+2097    %d satellite offsets were inside the earth\n
+
+2099    Enter initial guess for time of delta-V :
+
+2101    Enter number of desired variant orbits :
+
+2103    Residuals in arcseconds
+2104    Residuals in seconds along-track and arcseconds cross-track
+2105    Normalized residuals

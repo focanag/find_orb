@@ -62,6 +62,7 @@ for Windows and other non-*nix systems. */
 extern int debug_level;
 
 void ensure_config_directory_exists(); /* miscell.c */
+void make_path_available( const char *filename);      /* ephem0.cpp */
 
    /* MSVC/C++ lacks snprintf.  See 'ephem0.cpp' for details. */
 #if defined(_MSC_VER) && _MSC_VER < 1900
@@ -78,17 +79,14 @@ int debug_printf( const char *format, ...)                 /* mpc_obs.cpp */
          __attribute__ (( format( printf, 1, 2)))
 #endif
 ;
-int text_search_and_replace( char FAR *str, const char *oldstr,
-                                     const char *newstr);   /* ephem0.cpp */
 int get_defaults( ephem_option_t *ephemeris_output_options, int *element_format,
          int *element_precision, double *max_residual_for_filtering,
-         double *noise_in_arcseconds);                /* elem_out.cpp */
+         double *noise_in_sigmas);                /* elem_out.cpp */
 int inquire( const char *prompt, char *buff, const int max_len,
                      const int color);                /* fo.cpp */
 void refresh_console( void);                          /* fo.cpp */
 void move_add_nstr( const int col, const int row, const char *msg,
                      const int n_bytes);              /* fo.cpp */
-double current_jd( void);                       /* elem_out.cpp */
 char *fgets_trimmed( char *buff, size_t max_bytes, FILE *ifile); /*elem_out.c*/
 FILE *fopen_ext( const char *filename, const char *permits);   /* miscell.cpp */
 int make_pseudo_mpec( const char *mpec_filename, const char *obj_name);
@@ -119,13 +117,14 @@ int inquire( const char *prompt, char *buff, const int max_len,
 
 static void object_comment_text( char *buff, const OBJECT_INFO *id)
 {
-   sprintf( buff, "%d observations; ", id->n_obs);
+   snprintf( buff, 25, "%d observations; ", id->n_obs);
    make_date_range_text( buff + strlen( buff), id->jd_start, id->jd_end);
 }
 
 /* In the (interactive) console Find_Orb,  these allow some functions in
-orb_func.cpp to show info as orbits are being computed.  In this
-non-interactive code,  they're mapped to do nothing. */
+orb_func.cpp to show info as orbits are being computed,  or to let you
+abort processing by hitting a key.  In this non-interactive code,
+they're mapped to do nothing. */
 
 void refresh_console( void)
 {
@@ -137,6 +136,11 @@ void move_add_nstr( const int col, const int row, const char *msg, const int n_b
    INTENTIONALLY_UNUSED_PARAMETER( row);
    INTENTIONALLY_UNUSED_PARAMETER( msg);
    INTENTIONALLY_UNUSED_PARAMETER( n_bytes);
+}
+
+int curses_kbhit_without_mouse( )
+{
+   return( 0);
 }
 
 static double curr_jd( void)
@@ -158,31 +162,46 @@ static int remove_single_observation_objects( OBJECT_INFO *ids, const int n_ids)
 
 char *make_config_dir_name( char *oname, const char *iname);
 
+#ifdef _WIN32                /* MS is different. */
+   #define UNLINK       _unlink
+#else
+   #define UNLINK       unlink
+#endif
+
 #ifdef FORKING
+void fix_home_dir( char *filename);       /* ephem0.cpp */
+
 static int unlink_config_file( const char *filename)
 {
    char buff[255];
    int err_code;
-   extern int use_config_directory;          /* miscell.c */
+   extern const char *output_directory;
 
    get_file_name( buff, filename);
-   if( use_config_directory)
+   if( output_directory && *output_directory)
+      {
+      char cpath[255];
+
+      strlcpy_error( cpath, output_directory);
+      fix_home_dir( cpath);
+      strlcat_error( cpath, "/");
+      strlcat_error( cpath, buff);
+
+      err_code = UNLINK( cpath);
+      if( err_code)
+         fprintf( stderr, "Failed unlinking '%s' ('%s')\n", filename, buff);
+      }
+   else
       {
       char cpath[255];
 
       make_config_dir_name( cpath, buff);
-#ifdef _WIN32                /* MS is different. */
-      err_code = _unlink( cpath);
-#else
-      err_code = unlink( cpath);
-#endif
+      err_code = UNLINK( cpath);
+      if( err_code)
+         fprintf( stderr, "Failed unlinking '%s'\n", cpath);
       }
-   else
-#ifdef _WIN32
-      err_code = _unlink( buff);
-#else
-      err_code = unlink( buff);
-#endif
+   if( err_code)
+      fprintf( stderr, "Failed unlinking '%s' ('%s')\n", filename, buff);
    return( err_code);
 }
 
@@ -219,7 +238,7 @@ static void _merge_element_files( const char *filename, const int n_processes,
    for( i = 0; i < n_processes; i++)
       {
       process_count = i + 1;
-      input_files[i] = fopen_ext( get_file_name( buff, filename), "tfclr");
+      input_files[i] = fopen_ext( get_file_name( buff, filename), "tfcr");
       }
    for( i = quit = 0; !quit; i++)
       {
@@ -245,7 +264,10 @@ static void _merge_element_files( const char *filename, const int n_processes,
          {
          err_code = unlink_config_file( filename);
          if( err_code)
+            {
+            fprintf( stderr, "Failed to unlink '%s' ('%s')\n", buff, filename);
             perror( buff);
+            }
          assert( !err_code);
          }
       }
@@ -316,9 +338,10 @@ static void get_summary_info( char *buff, const char *mpec_filename)
    FILE *ifile = fopen_ext( mpec_filename, "frb");
    char ibuff[400], *tptr;
    unsigned i;
+   bool is_geocentric = false;
 
-   memset( buff, ' ', 80);
-   buff[80] = '\0';
+   memset( buff, ' ', 81);
+   buff[81] = '\0';
    while( fgets( ibuff, sizeof( ibuff), ifile))
       {
       if( (tptr = strstr( ibuff, "Pseudo-MPEC for")) != NULL)
@@ -335,7 +358,11 @@ static void get_summary_info( char *buff, const char *mpec_filename)
          extract_value( buff + 51, tptr + 5, 1);
       else if( (tptr = strstr( ibuff, " Ea ")) != NULL)
          memcpy( buff + 68, tptr + 4, 7);
+      else if( !memcmp( ibuff, "   Perigee", 10))
+         is_geocentric = true;
       }
+   if( is_geocentric)
+      memcpy( buff + 76, "(geo)", 5);
    fclose( ifile);
 }
 
@@ -414,14 +441,16 @@ static int add_json_data( const char *ofilename, const bool have_json_ephem,
             const char *packed_desig, const bool is_last_call)
 {
    char buff[200];
-   FILE *ofile = fopen_ext( get_file_name( buff, ofilename), "tfcab");
-   FILE *ifile;
+   FILE *ifile, *ofile;
    bool found_start = false, found_end = false;
 
    if( have_json_ephem)
       ifile = open_json_file( buff, "JSON_COMBINED_NAME", "combined.json", packed_desig, "rb");
    else
       ifile = open_json_file( buff, "JSON_ELEMENTS_NAME", "elements.json", packed_desig, "rb");
+   if( !ifile)
+      return( -1);
+   ofile = fopen_ext( get_file_name( buff, ofilename), "tfcab");
    while( !found_start && fgets_trimmed( buff, sizeof( buff), ifile))
       if( !strcmp( buff, "  {"))
          found_start = true;
@@ -462,9 +491,39 @@ static const char *get_arg( const int argc, const char **argv, const int idx)
    return( rval);
 }
 
+static void emit_mpc_standard_epoch_elements( double *orbit, const double curr_epoch,
+                  OBSERVE *obs, const int n_obs, const char *orbit_constraints,
+                  const int element_precision, const int element_options)
+{
+   const char *std_epoch_text = get_environment_ptr( "MPC_EPOCH");
+   extern double _mpc_standard_epoch;
+
+   _mpc_standard_epoch = get_time_from_string( 0., std_epoch_text,
+                          FULL_CTIME_YMD | CALENDAR_JULIAN_GREGORIAN, NULL);
+
+   if( _mpc_standard_epoch)
+      {
+      const int err = full_improvement( obs, n_obs, orbit, curr_epoch, NULL,
+                        ORBIT_SIGMAS_REQUESTED, _mpc_standard_epoch);
+
+      if( !err)
+         {
+         extern const char *elements_filename;
+         const char *saved_elements_filename = elements_filename;
+
+         elements_filename = "mpc_elem.txt";
+         write_out_elements_to_file( orbit, curr_epoch, _mpc_standard_epoch, obs, n_obs,
+                     orbit_constraints, element_precision,
+                     0, element_options);
+         elements_filename = saved_elements_filename;
+         }
+      _mpc_standard_epoch = 0.;
+      }
+}
+
 int main( int argc, const char **argv)
 {
-   char tbuff[300], mpc_codes[200];
+   char tbuff[300], *mpc_codes = (char *)malloc( 20);
    char **summary_lines = NULL;
    const char *separate_residual_file_name = NULL;
    const char *mpec_path = NULL;
@@ -477,9 +536,8 @@ int main( int argc, const char **argv)
    int n_lines_written = 0;
    FILE *summary_ofile = NULL;
    extern int forced_central_body;
-   extern int use_config_directory;          /* miscell.c */
+   int override_forced_central_body = 0;     /* by default,  all orbits are heliocentric */
    int element_precision = 5;
-   bool all_heliocentric = true;
    bool use_colors = true;
    bool show_processing_steps = true;
    ephem_option_t ephemeris_output_options
@@ -495,10 +553,13 @@ int main( int argc, const char **argv)
    int child_status;
 #endif
 
-   if( !strcmp( argv[0], "fo"))
-      use_config_directory = true;
-   else
-      use_config_directory = false;
+   for( i = 1; i < argc; i++)
+      if( argv[i][0] == '-' && argv[i][1] == 'x')
+         {
+         extern const char *alt_config_directory;
+
+         alt_config_directory = get_arg( argc, argv, i);
+         }
    ensure_config_directory_exists();
    *mpc_codes = '\0';
    if( reset_astrometry_filename( &argc, argv))
@@ -529,9 +590,11 @@ int main( int argc, const char **argv)
                }
                break;
             case 'C':
+               mpc_codes = (char *)realloc( mpc_codes,
+                                strlen( mpc_codes) + strlen( arg) + 2);
                if( *mpc_codes)
-                  strlcat_err( mpc_codes, " ", sizeof( mpc_codes));
-               strlcat_err( mpc_codes, arg, sizeof( mpc_codes));
+                  strcat( mpc_codes, " ");
+               strcat( mpc_codes, arg);
                break;
             case 'd':
                debug_level = atoi( arg);
@@ -560,7 +623,10 @@ int main( int argc, const char **argv)
                computed_obs_filename = arg;
                break;
             case 'h':                     /* show planet-centric orbits */
-               all_heliocentric = false;
+               if( !*arg)
+                  override_forced_central_body = ORBIT_CENTER_AUTO;
+               else
+                  override_forced_central_body = atoi( arg);
                break;
 #ifdef FORKING
             case 'k':
@@ -587,6 +653,13 @@ int main( int argc, const char **argv)
             case 'n':
                starting_object = atoi( arg);
                break;
+            case 'N':
+               {
+               extern const char *fullname_pattern;
+
+               fullname_pattern = arg;
+               }
+               break;
             case 'O':          /* write output files to specified dir */
                {
                extern const char *output_directory;
@@ -596,10 +669,16 @@ int main( int argc, const char **argv)
                break;
             case 'o':            /* obj designation / ephemeris from orbital */
                break;            /* elems:  fall through, handle below */
+            case 'P':
+               {
+               extern const char *desig_pattern;
+
+               desig_pattern = arg;
+               }
+               break;
             case 'p':
                {
-               FILE *ifile = fopen_ext( "dummy.txt", "tfcw");
-
+               ifile = fopen_ext( "dummy.txt", "tfcw");
                fclose( ifile);
                n_processes = atoi( arg);
                }
@@ -698,13 +777,7 @@ int main( int argc, const char **argv)
                   state_vect_text = arg;
                   }
                break;
-            case 'x':
-               {
-               extern const char *alt_config_directory;
-
-               use_config_directory = true;
-               alt_config_directory = arg;
-               }
+            case 'x':            /* handled above */
                break;
             case 'X':
                {
@@ -719,9 +792,6 @@ int main( int argc, const char **argv)
 
                n_extra_full_steps = atoi( arg);
                }
-               break;
-            case 'z':
-               use_config_directory = true;
                break;
             default:
                printf( "Unknown command-line option '%s'\n", argv[i]);
@@ -749,7 +819,7 @@ int main( int argc, const char **argv)
          }
       }
 
-   forced_central_body = (all_heliocentric ? 0 : ORBIT_CENTER_AUTO);
+   forced_central_body = override_forced_central_body;
    if( ephem_option_string)
       ephemeris_output_options = parse_bit_string( ephem_option_string);
 
@@ -832,6 +902,7 @@ int main( int argc, const char **argv)
             {
             extern int append_elements_to_element_file;
             extern int n_obs_actually_loaded;
+            extern int available_sigmas;
             extern char orbit_summary_text[];
             long file_offset = ids[i].file_offset - 40000L;
             int element_options = ELEM_OUT_ALTERNATIVE_FORMAT;
@@ -847,7 +918,6 @@ int main( int argc, const char **argv)
 
             if( (n_obs_actually_loaded > 1 || !drop_single_obs) && curr_epoch > 0.)
                {
-               extern int available_sigmas;
                int n_obs_included = 0;
                unsigned j = 0;
 
@@ -948,12 +1018,12 @@ int main( int argc, const char **argv)
                      }
                   while( *mpc_code_tptr)
                      {
-                     char mpc_code[10], ephem_filename[200];
+                     char mpc_code[20], ephem_filename[200];
 
                      j = 0;
-                     while( j < 9 && *mpc_code_tptr > ' ' && *mpc_code_tptr != ',')
+                     while( j < sizeof( mpc_code) && *mpc_code_tptr > ' ' && *mpc_code_tptr != ',')
                         mpc_code[j++] = *mpc_code_tptr++;
-                     assert( j < 9);
+                     assert( j < sizeof( mpc_code));
                      mpc_code[j] = '\0';
                      while( *mpc_code_tptr == ' ' || *mpc_code_tptr == ',')
                         mpc_code_tptr++;
@@ -966,6 +1036,7 @@ int main( int argc, const char **argv)
                         real_packed_desig( packed_desig, obs->packed_id);
                         text_search_and_replace( ephem_filename, "%p", packed_desig);
                         ephemeris_filename = ephem_filename;
+                        make_path_available( ephem_filename);
                         }
                      if( !ephemeris_in_a_file_from_mpc_code( ephemeris_filename,
                               orbits_to_use, obs, n_obs_actually_loaded,
@@ -1002,7 +1073,7 @@ int main( int argc, const char **argv)
                               if( j == 4)
                                  {
                                  tbuff[23] = tbuff[39] = tbuff[73] = '\0';
-                                 snprintf_append( new_line, sizeof( new_line), "  %s  %s  %s",
+                                 snprintf_append( new_line, sizeof( new_line), " %s  %s  %s",
                                           tbuff + 15, tbuff + 30, tbuff + 57);
                                                 /* now add sigma from end of ephem: */
                                  while( fgets_trimmed( tbuff, sizeof( tbuff), ephemeris_ifile))
@@ -1040,6 +1111,9 @@ int main( int argc, const char **argv)
             if( n_processes == 1)
                add_json_data( "total.json", have_json_ephem, obs->packed_id,
                      i == starting_object + total_objects - 1);
+            if( available_sigmas == COVARIANCE_AVAILABLE)
+               emit_mpc_standard_epoch_elements( orbit, curr_epoch, obs, n_obs_actually_loaded,
+                                       orbit_constraints, element_precision, element_options);
             unload_observations( obs, n_obs_actually_loaded);
             }
          object_comment_text( tbuff, ids + i);
@@ -1050,6 +1124,7 @@ int main( int argc, const char **argv)
             printf( "  %s\n", tbuff);
          }
    free( ids);
+   free( mpc_codes);
    if( summary_ofile)
       {
       int pass;

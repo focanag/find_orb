@@ -159,7 +159,6 @@ clean_temp:
 	$(RM) $(IDIR)/elem_short.json
 	$(RM) $(IDIR)/ephemeri.txt
 	$(RM) $(IDIR)/ephemeri.json
-	$(RM) $(IDIR)/eph_json.txt
 	$(RM) $(IDIR)/gauss.out
 	$(RM) $(IDIR)/guide.txt
 	$(RM) $(IDIR)/guide?.txt
@@ -194,9 +193,9 @@ INSTALL_FILES= \
    bright.pgm bright2.pgm calendar.txt cometdef.sof command.txt cospar.txt \
    details.txt dosephem.txt dos_help.txt elem_pop.txt environ.def \
    eph2tle.txt eph_expl.txt eph_type.txt ?findorb.txt frame_he.txt \
-   geo_rect.txt header.htm jpl_eph.txt link_def.json mpc_area.txt \
+   geo_rect.txt header.htm hints.def jpl_eph.txt link_def.json mpc_area.txt \
    mpcorb.hdr mu1.txt nongravs.txt obj_help.txt obj_name.txt \
-   ObsCodes.htm ObsCodesF.html observer.txt obslinks.htm  \
+   ObsCodes.htm ObsCodesF.html observer.htm obslinks.htm  \
    odd_name.txt openfile.txt orbitdef.sof previous.def progcode.txt \
    radecfmt.txt residfmt.txt rovers.txt sat_xref.txt scope.json \
    scopes.txt splash.txt sigma.txt site_310.txt timehelp.txt xdesig.txt
@@ -212,7 +211,6 @@ install: all
 
 .endif
 	$(CP) $(INSTALL_FILES) $(IDIR)
-	$(CP) hints.txt $(IDIR)
 
 uninstall:
 .ifdef EXE

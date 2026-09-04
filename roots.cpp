@@ -42,29 +42,29 @@ Redefine MAX_POLY_ORDER if this is a problem.
    It works via a recursive process:  it finds the real roots of the
 _derivative_ of the polynomial.  (Therefore,  if you call this function
 with an eighth-degree polynomial,  it will internally generate the
-seventh-degree derivative polynomial,  find the real roots of that,
-which will mean finding the roots of a sixth-degree polynomial, and so
-on. As you'll see,  this eventually works down to a first-degree
-polynomial, a.k.a. a linear equation,  which is trivially solved without
-recursion.)
+seventh-degree derivative polynomial.  Finding the real roots of that
+will mean finding the roots of a sixth-degree polynomial, and so on.
+As you'll see,  this eventually works down to a first-degree
+polynomial, a.k.a. a linear equation,  which is trivially solved
+without recursion.)
 
    Anyway,  the "real roots of the derivative of the polynomial" are also
 known as the minima/maxima of the polynomial.  We can know as a fact that
-all real roots of the polynomial lie between these maxima/minima.  So the
-code evaluates the polynomial at each maximum/minimum;  if its value goes
-through a sign change between consecutive maxima/minima, we've got a root
+all real roots of the polynomial lie between these extrema.  So the
+code evaluates the polynomial at the extrema.  If the polynomial goes
+through a sign change between consecutive extrema,  we've got a root
 bracketed and can use find_poly_root_between() to nail it down precisely
 with the method of Laguerre.
 
-   One odd thing has to be done here,  though.  There are maxima/minima at
-+/- infinity,  too.  So if we find,  say,  three minima at x1 <= x2 <= x3,
+   One odd thing has to be done here,  though.  There are extrema at +/-
+infinity,  too.  So if we find,  say,  three extrema at x1, x2,  and x3,
 then there may be roots between (x1, x2) and (x2, x3), plus roots between
 -inf and x1 and between x3 and +inf.  Since an infinite limit is awkward,
 we find a limit on the possible magnitude of all roots, due to Cauchy
 (see below).  (Plus another limit I came up with,  which turned out to be
 a "rediscovery" of a limit from Donald Knuth's _The Art of Programming_.
 Knuth's limit is frequently smaller than Cauchy's... but not always,  so
-it pays to check them both.)  In general, if we find N minima/maxima,
+it pays to check them both.)  In general, if we find N extrema,  and
 then add in the two determined via Cauchy or Knuth,  there will be N+1
 ranges between them to search.  If the polynomial has all real roots,
 then every one of those ranges will bracket a root.
@@ -134,6 +134,11 @@ static inline double evaluate_poly_and_derivs( const double *poly,
    return( poly[0] + x * (poly[1] + rval * x));
 }
 
+static inline int same_signs( const double a, const double b)
+{
+   return( (a <= 0. && b <= 0.) || (a >= 0. && b >= 0.));
+}
+
 #define SEARCH_TOLERANCE 1.e-10
 
 /* find_poly_root_between() looks for a zero of a polynomial between
@@ -181,7 +186,7 @@ static double find_poly_root_between( const double *poly, const int poly_degree,
 
    if( x1 < 0. && x2 > 0.)            /* brackets span zero;  move   */
       {
-      if( y1 * poly[0] > 0.)          /* one end to x=0, y = poly[0] */
+      if( same_signs( y1, poly[0]))          /* one end to x=0, y = poly[0] */
          {
          x1 = 0.;
          y1 = poly[0];
@@ -213,7 +218,7 @@ static double find_poly_root_between( const double *poly, const int poly_degree,
          new_x = -1.;
          }
 
-      if( y1 * new_y > 0.)       /* move lower bound up */
+      if( same_signs( y1, new_y))       /* move lower bound up */
          {
          x1 = new_x;
          y1 = new_y;
@@ -237,7 +242,7 @@ static double find_poly_root_between( const double *poly, const int poly_degree,
 
       iteration++;
       y = evaluate_poly_and_derivs( poly, poly_degree, x, &deriv, &deriv2);
-      if( (y1 < 0. && y < 0.) || (y1 > 0. && y > 0.))
+      if( same_signs( y, y1))
          {
          x1 = x;
          y1 = y;
@@ -309,6 +314,22 @@ static inline double cauchy_upper_root_bound( const double *poly,
    return( 1. + max / fabs( *poly));
 }
 
+/* https://en.wikipedia.org/wiki/Geometrical_properties_of_polynomial_roots
+says that the following bound was "originally given by Lagrange,  but
+attributed to Zassenhaus by Donald Knuth."  It is twice the largest value
+in the sequence
+
+|a(n-1) / a(n)|,  |a(n-2) / a(n)| ^ 1/2,  .... |a(0) / a(n)| ^ 1/n
+
+    The same article mentions that Lagrange improved it by having the bound
+be the sum of the largest two values in the above sequence.  So we could do
+a little better here.  We could do still better by looking for bounds for real
+valued roots;  at present,  we're looking at the bounds for all roots,
+including complex ones we aren't attempting to determine anyway.
+
+   The following code evaluates the logarithms of the above terms,  then
+calls exp( ) to get the actual largest term so that it can be doubled. */
+
 static inline double knuth_upper_root_bound( const double *poly,
                                int poly_degree)
 {
@@ -363,7 +384,7 @@ int find_real_polynomial_roots( const double *poly, int poly_degree,
       double bound = best_upper_root_bound( poly, poly_degree);
       double root, ybound;
 
-      if( poly[0] * poly[degree] > 0.)
+      if( same_signs( poly[0], poly[degree]))
          bound = -bound;
       ybound = evaluate_poly( poly, poly_degree, bound);
       if( bound < 0.)
@@ -406,7 +427,7 @@ int find_real_polynomial_roots( const double *poly, int poly_degree,
 /*       printf( "Range %lf %lf (%lf %lf)\n", x1, x2, y1, y2);    */
                /* Make sure there is root searching to do (i.e.,  there is */
                /* a range to search and a sign change within that range): */
-         if( y1 * y2 <= 0.)
+         if( !same_signs( y1, y2))
             {
             real_roots[n_roots_found++] = find_poly_root_between( poly,
                                   poly_degree, x1, y1, x2, y2);

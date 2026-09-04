@@ -1,35 +1,41 @@
 q              Quit
+.              About
 o              Open...
 n              NewObj
-F16 (shift-f4) AddObj
+O              AddObj
 m              epheM
 f              Full
 h              Herget
 v              Vaisa
 d              resiD
+}              ResidFmt
+Alt-L          Language
 g              Gauss
 l              constr
 e              Epoch
 !              all_perts
 u              Undo
+{              FilterObs
 *              NonGravs
 c              Calend
-+              HelioOnly
++              OrbCenter
 -              Obs'ories
 x              ToggObs
 =              MagResids
+j              MagType
 w              Worst
 #              Simplex
 /              Superplex
 :              Linearize
 |              MonteCarlo
 [              CovarData
-`              CmtMags
-Ctrl-W         ToggUp
-F2             ToggDn
+Ctrl-Dn        NextOpp
+Ctrl-Up        PrevOpp
+Shift-Up       ToggUp
+Shift-Dn       ToggDn
 Ctrl-Y         BanObs
 Ctrl-X         SaveOrbs
-)              ReadFile
+)              ShowFile
 End
    Color assignments (foreground,  then background,  in hex form)
    These apply to Windows Find_Orb and most modern Linux/*BSD/OS/X systems.
@@ -82,13 +88,14 @@ End colors
 
 Start hints
 
+.              Splash screen/Find_Orb version info
 b              Select format for observation times
 c              Show calendar
 r              Enter dist to object at start and end of arc
 q              Quit Find_Orb
 o              Open a file of astrometry
 n              Select a different object from the file
-F16 (shift-F4) Add astrometry for a different object
+O              Add astrometry for a different object
 m              Generate ephemerides
 f              Do a full least-squares improvement of the orbit
 h              Compute an orbit using the method of Herget
@@ -104,13 +111,14 @@ u              Undo (go back to previous orbit)
 -              Change the number of observatories shown at bottom
 x              Toggle currently selected observation(s) on/off
 =              Toggle display of magnitude residuals
+j              Cycle magnitude model from asteroid to comet nuclear to comet total
 w              Show included observation with the worst residuals
 #              Apply the 'simplex' orbit improvement method
 /              Apply the 'superplex' orbit improvement method
 :              Linearize the orbit
 |              Compute Monte Carlo variant orbits
 [              Show the covariance and some debugging data
-`              Toggle comet mags between nuclear M(N) and total M(T)
+{              Toggle obs on below a desired residual level,  off above it
 )              Select a file and show it on-screen
 0              Toggle lunar perturbations
 1              Toggle perturbations from Mercury
@@ -124,6 +132,7 @@ w              Show included observation with the worst residuals
 9              Toggle perturbations from Pluto
 a              Toggle perturbations from asteroids
 t              Select how residuals are shown
+Alt-L          Select display language
 Alt-K          Toggle display of uncertainties
 Alt-N          Select frame for orbital elements
 Alt-R          Set reference for orbital elements
@@ -131,6 +140,10 @@ Alt-X          Find next obs with a desired MPC code
 U+9            Toggle sort obs by date vs. sort by MPC code
 U+31004        Add a line of menu options
 U+31005        Remove last line of menu options
+Ctrl-Dn        Find first observation in the next opposition
+Ctrl-Up        Find last observation from the previous opposition
+Shift-Up       Toggle all observations above the selected one
+Shift-Dn       Toggle all observations below the selected one
 ?              Get help
 %              Set uncertainties for the selected observation(s)
 &              Select format for observation RA/decs
@@ -139,3 +152,16 @@ F2             Toggle observations below the currently selected one
 Ctrl-X         Save orbits for re-use
 Ctrl-Y         Write excluded observations to be 'banned'
 Ctrl-G         Set magnitude slope parameter (G)
+U+31008        Left-click to select tracklet, right to toggle it
+}              Cycle precision in which residuals are shown
+
+Start remaps :
+    ; PuTTY doesn't recognize Shift-Up or Shift-Dn (just returns the same key
+    ; codes as Up and Down).  For Alt-Dn,  Alt-Up,  Alt-Lt, Alt-Rt,  it returns
+    ; codes 4354 to 4357.  The following remaps Alt-Dn (for PuTTY) to Shift-Dn,
+    ; and Alt-Up to Shift-Up,  and will toggle observations below/above the
+    ; currently selected one.  Other key remaps may be added here as needed...
+U+4354         Shift-Dn
+U+4355         Shift-Up
+  U+4356         Alt-Lt    (not currently used)
+  U+4357         Alt-Rt    (not currently used)

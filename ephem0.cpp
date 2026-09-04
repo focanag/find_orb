@@ -33,7 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <stdlib.h>
 #include <time.h>
 #include <ctype.h>
-#include <assert.h>
+#include "assert2.h"
 #include <stdbool.h>
 #include "watdefs.h"
 #include "afuncs.h"
@@ -67,18 +67,16 @@ int write_residuals_to_file( const char *filename, const char *ast_filename,
           const int n_obs, const OBSERVE FAR *obs_data, const int format);
 void light_time_lag( const double jde, const double *orbit,       /* orb_func.c */
              const double *observer, double *result, const int is_heliocentric);
-void put_observer_data_in_text( const char FAR *mpc_code, char *buff);
 int make_pseudo_mpec( const char *mpec_filename, const char *obj_name);
                                               /* ephem0.cpp */
 int earth_lunar_posn( const double jd, double FAR *earth_loc,
                                        double FAR *lunar_loc);
 bool nighttime_only( const char *mpc_code);                 /* mpc_obs.cpp */
+double get_planet_mass( const int planet_idx);                /* orb_func.c */
 void remove_trailing_cr_lf( char *buff);      /* ephem0.cpp */
 const char *get_environment_ptr( const char *env_ptr);     /* mpc_obs.cpp */
 void set_environment_ptr( const char *env_ptr, const char *new_value);
 uint64_t parse_bit_string( const char *istr);                /* miscell.cpp */
-int text_search_and_replace( char FAR *str, const char *oldstr,
-                                     const char *newstr);   /* ephem0.cpp */
 void format_dist_in_buff( char *buff, const double dist_in_au); /* ephem0.c */
 int debug_printf( const char *format, ...)                 /* mpc_obs.cpp */
 #ifdef __GNUC__
@@ -90,7 +88,6 @@ int calc_derivatives( const double jd, const double *ival, double *oval,
 char *iso_time( char *buff, const double jd, const int precision);   /* elem_out.c */
 double mag_band_shift( const char mag_band, int *err_code);   /* elem_out.c */
 char *get_file_name( char *filename, const char *template_file_name);
-double current_jd( void);                       /* elem_out.cpp */
 double utc_from_td( const double jdt, double *delta_t);     /* ephem0.cpp */
 double diameter_from_abs_mag( const double abs_mag,      /* ephem0.cpp */
                                      const double optical_albedo);
@@ -103,11 +100,6 @@ int setup_planet_elem( ELEMENTS *elem, const int planet_idx,
                                           const double t_cen);   /* moid4.c */
 char *mpc_station_name( char *station_data);       /* mpc_obs.cpp */
 FILE *fopen_ext( const char *filename, const char *permits);   /* miscell.cpp */
-int remove_rgb_code( char *buff);                              /* ephem0.cpp */
-static void output_signed_angle_to_buff( char *obuff, const double angle,
-                               const int precision);         /* ephem0.cpp */
-static void output_angle_to_buff( char *obuff, const double angle,
-                               const int precision);         /* ephem0.cpp */
 static void put_residual_into_text( char *text, const double resid,
                                  const int resid_format);    /* ephem0.cpp */
 FILE *open_json_file( char *filename, const char *env_ptr, const char *default_name,
@@ -124,6 +116,19 @@ const char *elements_filename = "elements.txt";
 
 static expcalc_config_t exposure_config;
 extern int n_orbit_params;
+
+/* Optimization can result in memmove() being remapped to memcpy()
+when the compiler can tell that the latter will actually work.  But you
+can then getting spurious warnings from Valgrind.  This code suppresses
+those spurious warnings,  and adds a check that we won't put data beyond
+the end of the buffer nor copy data that comes from after the buffer. */
+
+void *memmove_err( void *dest, const void *src, const size_t n, const void *endptr)
+{
+   assert( (char *)endptr >= (char *)dest + n);
+   assert( (char *)endptr >= (char *)src  + n);
+   return( memmove( dest, src, n));
+}
 
 /* Returns parallax constants (rho_cos_phi, rho_sin_phi) in AU. */
 
@@ -199,11 +204,11 @@ static void show_dist_in_au( char *buff, const double dist_in_au)
       fmt = "%7.4f";             /* " 1.2345" */
    else
       fmt = "%7.5f";             /* " .12345" */
-   snprintf( buff, 8, fmt, dist_in_au);
+   snprintf_err( buff, 8, fmt, dist_in_au);
    *buff = ' ';   /* remove leading zero for small amounts */
 }
 
-static const char *si_prefixes = "kMGTPEZYXWVUSRQONLJIHFDCBA";
+static const char *si_prefixes = "kMGTPEZYRQXWVUSONLJIHFDCBA";
 static bool use_au_only = false;
 
 /* Given a non-negative value,  this gives a four-character output
@@ -223,23 +228,23 @@ static void show_packed_with_si_prefixes( char *buff, double ival)
          {
          ival /= 1000.;
          if( ival < 9.9)
-            snprintf( buff, 5, "%3.1f%c", ival, si_prefixes[count]);
+            snprintf_err( buff, 5, "%3.1f%c", ival, si_prefixes[count]);
          else if( ival < 999.)
-            snprintf( buff, 5, "%3u%c", (unsigned)ival, si_prefixes[count]);
+            snprintf_err( buff, 5, "%3u%c", (unsigned)ival, si_prefixes[count]);
          count++;
          }
       }
    else if( ival > 99.9)
-      snprintf( buff, 5, "%4u", (unsigned)( ival + .5));
+      snprintf_err( buff, 5, "%4u", (unsigned)( ival + .5));
    else if( ival > 9.99)
-      snprintf( buff, 5, "%4.1f", ival);
+      snprintf_err( buff, 5, "%4.1f", ival);
    else if( ival > .99)
-      snprintf( buff, 5, "%4.2f", ival);
+      snprintf_err( buff, 5, "%4.2f", ival);
    else
       {
       char tbuff[7];
 
-      snprintf( tbuff, sizeof( tbuff), "%5.2f", ival);
+      snprintf_err( tbuff, sizeof( tbuff), "%5.2f", ival);
       strcpy( buff, tbuff + 1);  /* store value without leading 0 */
       }
 }
@@ -258,15 +263,15 @@ void format_dist_in_buff( char *buff, const double dist_in_au)
                   /* for objects within a million km (about 2.5 times   */
                   /* the distance to the moon),  switch to km/m/cm/mm:  */
       if( dist_in_km < .0099)                 /* 0 to 9900 millimeters: */
-         snprintf( buff, 8, "%5.0fmm", dist_in_km * 1e+6);    /* " NNNNmm" */
+         snprintf_err( buff, 8, "%5.0fmm", dist_in_km * 1e+6);    /* " NNNNmm" */
       else if( dist_in_km < .099)             /* 990 to 9900 centimeters: */
-         snprintf( buff, 8, "%5.0fcm", dist_in_km * 1e+5);    /* " NNNNcm" */
+         snprintf_err( buff, 8, "%5.0fcm", dist_in_km * 1e+5);    /* " NNNNcm" */
       else if( dist_in_km < 99.)          /* 99 to 99000 meters: */
-         snprintf( buff, 8, "%6.0fm", dist_in_km * 1e+3);     /* " NNNNNm" */
+         snprintf_err( buff, 8, "%6.0fm", dist_in_km * 1e+3);     /* " NNNNNm" */
       else if( dist_in_km < 999.)         /* 99.0 to 999.9 kilometers: */
-         snprintf( buff, 8, "%6.1fk", dist_in_km);            /* " NNN.Nk" */
+         snprintf_err( buff, 8, "%6.1fk", dist_in_km);            /* " NNN.Nk" */
       else if( dist_in_km < 999999.)      /* 999.9 to 999999 km: */
-         snprintf( buff, 8, "%7.0f", dist_in_km);
+         snprintf_err( buff, 8, "%7.0f", dist_in_km);
       else if( dist_in_au > 9999.999)
          {
          double dist_in_light_years =
@@ -284,9 +289,9 @@ void format_dist_in_buff( char *buff, const double dist_in_au)
             else
                {
                if( dist_in_light_years < 9.9)
-                  snprintf( buff, 8, "%4.1fxLY", dist_in_light_years);
+                  snprintf_err( buff, 8, "%4.1fxLY", dist_in_light_years);
                else
-                  snprintf( buff, 8, "%4.0fxLY", dist_in_light_years);
+                  snprintf_err( buff, 8, "%4.0fxLY", dist_in_light_years);
                buff[4] = si_prefixes[idx];
                }
             }
@@ -300,7 +305,7 @@ void format_dist_in_buff( char *buff, const double dist_in_au)
                fmt = "%5.2fLY";           /* " 1.23LY" */
             else
                fmt = "%5.3fLY";           /* " .123LY" */
-            snprintf( buff, 8, fmt, dist_in_light_years);
+            snprintf_err( buff, 8, fmt, dist_in_light_years);
             }
          }
       else
@@ -336,7 +341,23 @@ static void format_velocity_in_buff( char *buff, double vel)
       else        /* we give up;  it's too fast */
          format =  " !!!!!!";
       }
-   snprintf( buff, 8, format, vel);
+   snprintf_err( buff, 8, format, vel);
+}
+
+static void ra_dec_to_alt_az_2( const int planet, const DPT *ra_dec, DPT *alt_az,
+                              const DPT *latlon, const double jd_utc, double *hour_angle)
+{
+   double matrix[9], vect[3], vect_out[3];
+
+   polar3_to_cartesian( vect, -ra_dec->x, ra_dec->y);
+   calc_planet_orientation( planet, 0, jd_utc, matrix);
+   spin_matrix( matrix, matrix + 3, latlon->x);
+   if( hour_angle)
+      *hour_angle = atan2( -dot_product( vect, matrix + 3), dot_product( vect, matrix));
+   spin_matrix( matrix, matrix + 6, PI / 2. - latlon->y);
+   precess_vector( matrix, vect, vect_out);
+   alt_az->x = atan2( vect_out[1], vect_out[0]);
+   alt_az->y = asine( vect_out[2]);
 }
 
 /* Rob Matson asked about having the program produce ECF (Earth-Centered
@@ -347,6 +368,20 @@ planets as well. */
 
 double find_lat_lon_alt( const double ut, const double *ivect,
                   const int planet_no, double *lat_lon, const bool geometric);
+
+double seconds_per_time_unit_symbol( const char *symbol)
+{
+   size_t i;
+   const char *units = "smhdwy";
+   const double rvals[6] = { 1., 60., seconds_per_hour, seconds_per_day,
+               7. * seconds_per_day, 365.25 * seconds_per_day };
+
+   for( i = 0; units[i]; i++)
+      if( *symbol == units[i])
+         return( rvals[i]);
+   assert( 0);
+   return 0.;
+}
 
 /* 'get_step_size' parses input text to get a step size in days,  so that */
 /* '4h' becomes .16667 days,  '30m' becomes 1/48 day,  and '10s' becomes  */
@@ -394,26 +429,7 @@ double get_step_size( const char *stepsize, char *step_units, int *step_digits)
          units = tolower( units);
          if( step_units)
             *step_units = units;
-         switch( units)
-            {
-            case 'd':
-               break;
-            case 'h':
-               step /= hours_per_day;
-               break;
-            case 'm':
-               step /= minutes_per_day;
-               break;
-            case 's':
-               step /= seconds_per_day;
-               break;
-            case 'w':
-               step *= 7.;
-               break;
-            case 'y':
-               step *= 365.25;
-               break;
-            }
+         step *= seconds_per_time_unit_symbol( &units) / seconds_per_day;
          }
    return( step);
 }
@@ -466,7 +482,7 @@ static void setup_obj_loc( obj_location_t *p, double *orbit,
       p[i].dec = asin( topo[2] / p[i].r);
       p[i].sun_earth = vector3_length( obs_posn);
       p[i].sun_obj = vector3_length( orbit);
-      orbit += 6;
+      orbit += n_orbit_params;
       }
 }
 
@@ -532,7 +548,7 @@ static int put_ephemeris_posn_angle_sigma( char *obuff, const double dist,
    if( integer_posn_ang < 0)
       integer_posn_ang += 180;
    if( computer_friendly)
-      snprintf( resid_buff, sizeof( resid_buff), "  %6u",
+      snprintf_err( resid_buff, sizeof( resid_buff), "  %6u",
                            (unsigned)dist_in_arcsec);
    else
       {
@@ -540,15 +556,13 @@ static int put_ephemeris_posn_angle_sigma( char *obuff, const double dist,
                                     RESIDUAL_FORMAT_OVERPRECISE);
       resid_buff[5] = '\0';
       }
-   snprintf( obuff, 13, "%s %3d", resid_buff + 1, integer_posn_ang);
+   snprintf_err( obuff, 13, "%s %3d", resid_buff + 1, integer_posn_ang);
    return( integer_posn_ang);
 }
 
-/* Old MSVCs and OpenWATCOM lack erf() and many other math functions: */
-
-#if defined( _MSC_VER) && (_MSC_VER < 1800) || defined( __WATCOMC__)
-double erf( double x);     /* orb_fun2.cpp */
-#endif
+#if( __cplusplus < 201103L)
+double erf( double x);   /* orb_fun2.cpp : replacement for */
+#endif                  /* pre-C99 or pre-C++11 */
 
 #define SWAP( A, B, TEMP)   { TEMP = A;  A = B;  B = TEMP; }
 
@@ -756,7 +770,6 @@ static int find_precovery_plates( OBSERVE *obs, const int n_obs,
                   && (prob = precovery_in_field( &field, p3, n_orbits, 0.)) > .1)
                {
                char time_buff[40], buff[200];
-               int i;
                bool matches_an_observation = false;
                bool show_it = true;
                double obj_ra = p3->ra, obj_dec = p3->dec;
@@ -778,7 +791,7 @@ static int find_precovery_plates( OBSERVE *obs, const int n_obs,
                   obj_ra *= 180. / PI;
                   obj_dec *= 180. / PI;
                   if( !show_base_60)
-                     snprintf( buff, sizeof( buff), "%8.4f %8.4f",
+                     snprintf_err( buff, sizeof( buff), "%8.4f %8.4f",
                                        obj_ra, obj_dec);
                   else
                      {
@@ -794,7 +807,7 @@ static int find_precovery_plates( OBSERVE *obs, const int n_obs,
                      char filename[20];
 
                      current_file_number = field.file_number;
-                     snprintf( filename, sizeof( filename), "css_%d.csv",
+                     snprintf_err( filename, sizeof( filename), "css_%d.csv",
                                     current_file_number);
                      if( original_file)
                         fclose( original_file);
@@ -873,7 +886,7 @@ static inline int get_radar_data( const char *mpc_code, RADAR_DATA *rdata)
    int rval = -1;
 
    memset( rdata, 0, sizeof( RADAR_DATA));
-   snprintf( tbuff, sizeof( tbuff), "RADAR_%.3s", mpc_code);
+   snprintf_err( tbuff, sizeof( tbuff), "RADAR_%.3s", mpc_code);
    tptr = get_environment_ptr( tbuff);
    if( tptr)
       if( sscanf( tptr, "%lf,%lf,%lf,%lf,%lf",
@@ -1134,7 +1147,7 @@ and planet.  We can then use the above 'sunlight_visible' function
 to determine the fraction of the sun that is visible (not blocked),
 almost always 100% (you don't spend much time in the earth's shadow).
 
-   See http://www.minorplanet.info/MPB/issues/MPB_45-3.pdf for a discussion
+   See https://mpbulletin.org/issues/MPB_45-3.pdf for a discussion
 of two instances where this matters.  2008 TC3 and 2018 LA,  impactors,
 are other examples of objects passing through earth's shadow,  as are
 numerous artsats.
@@ -1171,7 +1184,7 @@ double shadow_check( const double *planet_loc,
    r = sqrt( r2);
    angular_sep = acos( (dot - r2) / (d * r));
    ang_size_sun = SUN_RADIUS_IN_AU / r;
-   ang_size_planet = planet_radius_in_au / d;
+   ang_size_planet = asin( planet_radius_in_au / d);
    if( ang_size_sun + ang_size_planet < angular_sep)
       return( 1.);         /* no overlap */
    else if( ang_size_planet > ang_size_sun + angular_sep)
@@ -1187,10 +1200,10 @@ double shadow_check( const double *planet_loc,
       for( i = 0; i <= n_splits; i++)
          {
          const double area = r0 * r0 + (1. - r0 * r0) * (double)i / (double)n_splits;
-         const double r = sqrt( area);
-         const double intensity = solar_disc_intensity( r);
+         const double r1 = sqrt( area);
+         const double intensity = solar_disc_intensity( r1);
          const double fraction =
-                sunlight_visible( ang_size_sun * r, ang_size_planet, angular_sep) * r * r;
+                sunlight_visible( ang_size_sun * r1, ang_size_planet, angular_sep) * area;
 
          rval += (intensity - prev_intensity) * (fraction - prev_fraction)
                         / (area - prev_area);
@@ -1218,13 +1231,15 @@ static void format_motion( char *buff, const double motion)
 
    if( fabs_motion > 999999.)
       motion_format = "-------";
+   else if( fabs_motion > 9999.)
+      motion_format = "%7.0f";
    else if( fabs_motion > 999.)
       motion_format = "%7.1f";
    else if( fabs_motion > 99.9)
       motion_format = "%7.2f";
    else
       motion_format = "%7.3f";
-   snprintf( buff, 8, motion_format, motion);
+   snprintf_err( buff, 8, motion_format, motion);
 }
 
 #ifdef NOT_CURRENTLY_USED
@@ -1319,7 +1334,7 @@ inline void calc_sr_dist_and_posn_ang( const DPT *ra_decs, const unsigned n_obje
    z2 = c / z1;
    *dist = sqrt( z1);
    assert( z1 > z2);    /* z1 should be the _major_ axis */
-   *posn_ang = atan2( sum_xy, sum_x2 - z2);
+   *posn_ang = atan2( sum_x2 - z2, sum_xy);
     if( *posn_ang < 0.)
       *posn_ang += PI;
 #ifdef ENABLE_SCATTERPLOTS
@@ -1369,12 +1384,44 @@ static inline void clean_up_json_number( char *out_text)
       memmove( out_text, out_text + 1, strlen( out_text));
 }
 
+static double get_motion_unit_text( char *obuff)
+{
+   double motion_units = 1.;
+   const char *units_set = get_environment_ptr( "MOTION_UNITS");
+
+   if( !*units_set)
+      units_set = "'/hr";
+   strlcpy_err( obuff, units_set, 7);
+   if( *obuff == 'm')
+      {
+      obuff++;
+      motion_units = 1000.;
+      }
+   switch( *obuff)
+      {
+      case '"':
+         motion_units *= 60.;
+         break;
+      case 'd':
+         motion_units /= 60.;
+         break;
+      default:
+         break;
+      }
+   assert( obuff[1] == '/');
+   motion_units *= seconds_per_time_unit_symbol( obuff + 2) / 3600.;
+   return( motion_units);
+}
+
+
 static int create_json_ephemeris( FILE *ofile, FILE *ifile, char *header,
                      const double jd_start, const double step)
 {
    char buff[1024];
    int line_no = 0;
 
+   get_motion_unit_text( buff);
+   text_search_and_replace( header, buff, "'/hr");
    text_search_and_replace( header, "-", "");
    text_search_and_replace( header, " RA ", " RA RA60 ");
    text_search_and_replace( header, " Dec ", " Dec Dec60 ");
@@ -1393,6 +1440,16 @@ static int create_json_ephemeris( FILE *ofile, FILE *ifile, char *header,
          const char *preceder = (line_no ? ",\n" : "");
          const int step_number = (step ? (int)(( atof( buff) - jd_start) / step + .5) : line_no);
 
+         if( step_number < 0)
+            {
+            FILE *debug_file = fopen_ext( "ephem.err", "tfcwb");
+
+            fseek( ifile, 0L, SEEK_SET);
+            while( fgets_trimmed( buff, sizeof( buff), ifile))
+               fprintf( debug_file, "%s\n", buff);
+            fclose( debug_file);
+            return( -1);
+            }
          fprintf( ofile, "%s      \"%d\": {", preceder, step_number);
          while( *hptr && *bptr)
             {
@@ -1451,7 +1508,7 @@ static int create_json_ephemeris( FILE *ofile, FILE *ifile, char *header,
                {
                const size_t len = strlen( out_text);
 
-               memmove( out_text + 1, out_text, len + 1);
+               memmove_err( out_text + 1, out_text, len + 1, out_text + sizeof( out_text));
                *out_text = out_text[len + 1] = '\"';
                out_text[len + 2] = '\0';
                }
@@ -1480,7 +1537,7 @@ that a directory exists for it.  For example,   given a filename
 
    it'll mkdir( "/home"), mkdir ("/home/joe"),  ... "/home/joe/z/k32/hi_there". */
 
-static void make_path_available( const char *filename)
+void make_path_available( const char *filename)
 {
    char path[PATH_MAX];
    int i;
@@ -1502,13 +1559,14 @@ static void make_path_available( const char *filename)
 #ifndef _WIN32
 void fix_home_dir( char *filename)
 {
-   if( filename[0] == '~' && filename[1] == '/')
+   if( filename[0] == '~' && (filename[1] == '/' || filename[1] == '\0'))
       {
       const char *home_dir = getenv( "HOME");
-      const size_t len = strlen( home_dir);
+      const size_t len = (home_dir ? strlen( home_dir) : 0);
 
       memmove( filename + len, filename + 1, strlen( filename));
-      memcpy( filename, home_dir, len);
+      if( home_dir)
+         memcpy( filename, home_dir, len);
       }
 }
 #endif
@@ -1537,19 +1595,25 @@ https://www.projectpluto.com/fo_usage#json_files for further
 information. */
 
 unsigned random_seed;
+double _mpc_standard_epoch = 0.;        /* see fo.cpp */
 
 FILE *open_json_file( char *filename, const char *env_ptr, const char *default_name,
                   const char *packed_desig, const char *permits)
 {
    char tbuff[100], full_permits[20];
 
+   if( _mpc_standard_epoch)       /* generating element files for MPC */
+      strlcpy_error( tbuff, "MPC_");
+   else
+      *tbuff = '\0';
 #ifdef _WIN32
-   strlcpy_error( tbuff, "WIN_");
+   strlcat_error( tbuff, "WIN_");
+#endif
    strlcat_error( tbuff, env_ptr);
    env_ptr = get_environment_ptr( tbuff);
-#else
-   env_ptr = get_environment_ptr( env_ptr);
-#endif
+
+   if( !strcmp( env_ptr, "none"))
+      return( NULL);
    if( !*env_ptr)
       {
       get_file_name( filename, default_name);
@@ -1586,6 +1650,8 @@ static int combine_json_elems_and_ephems( const char *packed_desig, FILE *ephem_
    bool in_ephemerides = false;
 
    ofile = open_json_file( buff, "JSON_COMBINED_NAME", "combined.json", packed_desig, "wb");
+   if( !ofile)
+      return( -1);
    elem_file = open_json_file( buff, "JSON_ELEMENTS_NAME", "elements.json", packed_desig, "rb");
    while( !obs_end_found && fgets( buff, sizeof( buff), elem_file))
       {
@@ -1657,6 +1723,66 @@ static double find_closest_approach( const double *input_orbit, double jde,
       *dist = sqrt( r2);
       }
    return( jde);
+}
+
+double get_approach_info( const double *orbit, double epoch,
+                            const int planet_no, double *dist)
+{
+   double step = 0., torbit[MAX_N_PARAMS];
+   double t_neg = 0., t_pos = 0.;
+   const double tolerance = 1e-5;
+   size_t n_iterations = 0;
+   const size_t max_iter = 30;
+
+   memcpy( torbit, orbit, n_orbit_params * sizeof( double));
+   do
+      {
+      double planet_state[6], rel_state[6], r2, v_dot_r, new_epoch;
+      size_t i;
+
+      compute_observer_loc( epoch, planet_no, 0., 0., 0., planet_state);
+      compute_observer_vel( epoch, planet_no, 0., 0., 0., planet_state + 3);
+      for( i = 0; i < 6; i++)
+         rel_state[i] = torbit[i] - planet_state[i];
+//    step2 = step;
+      r2 = dot_product( rel_state, rel_state);
+      v_dot_r = dot_product( rel_state, rel_state + 3);
+      if( v_dot_r < 0.)
+         t_neg = epoch;
+      else
+         t_pos = epoch;
+      if( r2 > 0.005 * 0.005)
+         step = -dot_product( rel_state, rel_state + 3)
+                / dot_product( rel_state + 3, rel_state + 3);
+      else
+         {
+         ELEMENTS elem;
+
+         elem.gm = get_planet_mass( planet_no);
+         elem.central_obj = planet_no;
+         calc_classical_elements( &elem, rel_state, epoch, 1);
+         step = elem.perih_time - epoch;
+         }
+      if( dist)
+         *dist = sqrt( r2);
+//    if( n_iterations % 3 == 2)      /* use Aitken delta-squared iteration */
+//        elem.perih_time = epoch - step2 - step2 * step2 / (step - step2);
+      new_epoch = epoch + step;
+      if( t_neg && t_pos)
+         if( (new_epoch - t_neg) * (new_epoch - t_pos) > 0. || n_iterations % 7 == 0)
+            {
+            debug_printf( "Outside brackets\n");
+            new_epoch = (t_neg + t_pos) / 2.;
+            }
+      integrate_orbit( torbit, epoch, new_epoch);
+      debug_printf( " %d : Integrated %f to %f -> step %f\n", (int)n_iterations, epoch,
+                                     new_epoch, step);
+      epoch = new_epoch;
+      n_iterations++;
+      assert( n_iterations < max_iter);
+      }
+      while( fabs( step) > tolerance);
+   return( epoch);
 }
 
 static void add_lon_lat_to_ephem( char *buff, const size_t buflen,
@@ -1820,6 +1946,37 @@ double find_next_auto_step( const double target_diff, const bool going_backward,
          }
       }
    return( rval);
+}
+
+int add_ephemeris_details( FILE *ofile, const double start_jd,
+                                               const double end_jd)
+{
+   time_t t0;
+   char tbuff[128];
+   FILE *ifile;
+   extern const char *elements_filename;
+   const char *vector_options = get_environment_ptr( "VECTOR_OPTS");
+   const char *timescale = get_environment_ptr( "EPHEMERIS_TIMESCALE");
+
+   t0 = time( NULL);
+   fprintf( ofile, "\nCreated %s", ctime( &t0));
+
+   full_ctime( tbuff, start_jd, CALENDAR_JULIAN_GREGORIAN);
+   fprintf( ofile, "Ephemeris start: %s\n", tbuff);
+
+   full_ctime( tbuff, end_jd, CALENDAR_JULIAN_GREGORIAN);
+   fprintf( ofile, "Ephemeris end:   %s\n", tbuff);
+
+   fprintf( ofile, "Times are all %s\n",
+            (*timescale == 'U' ? "UTC" : "TDT"));
+   fprintf( ofile, "Positions/velocities are in %s J2000\n",
+                      atoi( vector_options) ? "ecliptic" : "equatorial");
+
+   ifile = fopen_ext( get_file_name( tbuff, elements_filename), "tfcrb");
+   while( fgets( tbuff, sizeof( tbuff), ifile))
+      fwrite( tbuff, strlen( tbuff), 1, ofile);
+   fclose( ifile);
+   return( 0);
 }
 
 /* A lunar eclipse is said to have an 'eclipse magnitude' U of 0 when the
@@ -2025,7 +2182,7 @@ static int get_ephem_times_from_file( const char *filename)
    ifile = fopen_ext( filename, "rb");
    if( !ifile)
       {
-      snprintf( buff, sizeof( buff), "'%s' not found\n", filename);
+      snprintf_err( buff, sizeof( buff), "'%s' not found\n", filename);
       generic_message_box( buff, "o");
       return( 0);
       }
@@ -2037,12 +2194,13 @@ static int get_ephem_times_from_file( const char *filename)
    while( fgets_trimmed( buff, sizeof( buff), ifile))
       if( *buff != '#')
          {
-         double jd = get_time_from_string( 0., buff + byte_offset, FULL_CTIME_YMD, NULL);
+         double jd = get_time_from_string( 0., buff + byte_offset,
+                         FULL_CTIME_YMD | CALENDAR_JULIAN_GREGORIAN, NULL);
 
          if( jd > 1.)
             {
             if( time_system)   /* Input times are in TD;  cvt to UTC */
-               jd = utc_from_td( jd, NULL) / seconds_per_day;
+               jd = utc_from_td( jd, NULL);
             list_of_ephem_times[n_times++] = jd;
             }
          else if( !memcmp( buff, "OPTION ", 7))
@@ -2093,7 +2251,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
    FILE *ofile, *computer_friendly_ofile = NULL;
    const bool computer_friendly = ((options & OPTION_COMPUTER_FRIENDLY) ? true : false);
    char step_units;
-   const char *timescale = get_environment_ptr( "TT_EPHEMERIS");
+   const char *timescale = get_environment_ptr( "EPHEMERIS_TIMESCALE");
    const char *override_date_format = get_environment_ptr( "DATE_FORMAT");
    double abs_mag = calc_absolute_magnitude( obs, n_obs);
    double max_auto_step = 0.;
@@ -2108,13 +2266,25 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
    double curr_jd = jd_start, real_jd_start = jd_start;
    const bool fake_astrometry = ((options & 7) == OPTION_FAKE_ASTROMETRY);
    const char *group_data;
+   int n_mag_places = atoi( get_environment_ptr( "MAG_DIGITS"));
+   char motion_unit_text[7];
+   double motion_units;
+   const bool showing_rvel_sigmas = (options & OPTION_RADIAL_VEL_OUTPUT)
+                                 && (options & OPTION_RV_AND_DELTA_SIGMAS)
+                                 && n_objects > 1;
+   const bool showing_delta_sigmas = !(options & OPTION_SUPPRESS_DELTA)
+                                 && (options & OPTION_RV_AND_DELTA_SIGMAS)
+                                 && n_objects > 1;
 
-   snprintf( buff, sizeof( buff), "GROUP_%.3s", note_text + 1);
+   motion_units = get_motion_unit_text( motion_unit_text);
+   strlcat( motion_unit_text, "----", sizeof( motion_unit_text));
+
+   snprintf_err( buff, sizeof( buff), "GROUP_%.3s", note_text + 1);
    group_data = get_environment_ptr( buff);
    if( (!cinfo->rho_cos_phi && !cinfo->rho_sin_phi && !use_observation_times && !show_geo_quantities
                && !*group_data
                && memcmp( note_text, "(Opt)", 5)) || ephem_type != OPTION_OBSERVABLES)
-      options &= ~(OPTION_ALT_AZ_OUTPUT | OPTION_VISIBILITY | OPTION_MOON_ALT
+      options &= ~(OPTION_ALT_AZ_OUTPUT | OPTION_MOON_ALT
                      | OPTION_MOON_AZ | OPTION_SUN_ALT | OPTION_SUN_AZ
                      | OPTION_SNR | OPTION_EXPOSURE_TIME
                      | OPTION_SKY_BRIGHTNESS | OPTION_SUPPRESS_UNOBSERVABLE);
@@ -2170,6 +2340,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
       }
    if( cinfo->planet < 0 && cinfo->planet != -2)      /* bad observatory code */
       return( -3);
+   if( n_mag_places < 1)
+      n_mag_places = 1;
    if( !abs_mag)
       abs_mag = atof( get_environment_ptr( "ABS_MAG"));
    if( ephem_type != OPTION_OBSERVABLES || !(options & OPTION_SHOW_SIGMAS))
@@ -2212,7 +2384,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
        ephem_type == OPTION_MPCORB_OUTPUT ||
        ephem_type == OPTION_8_LINE_OUTPUT)
       {
-      timescale = "y";        /* force TT output */
+      if( !*timescale)
+         timescale = "TT";        /* default to TT output */
       fprintf( ofile, "%.5f %f %d %s %s\n", real_jd_start, step, n_steps,
                      get_environment_ptr( "VECTOR_OPTS"), note_text);
       }
@@ -2242,13 +2415,15 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
          }
       if( note_text)
          fprintf( ofile, "#%s\n", note_text);
-      snprintf( buff, sizeof( buff), "Date %s%s  ",
-                     (*timescale ? "(TT)"  : "(UTC)"), hr_min_text);
+      snprintf_err( buff, sizeof( buff), "Date %s%s  ",
+                     (*timescale == 'T' ? "(TT) "  : "(UTC)"), hr_min_text);
       if( !(options & OPTION_SUPPRESS_RA_DEC))
          snprintf_append( buff, sizeof( buff), "-RA%s   -Dec%s  ",
                                     added_prec_text_ra + 3, added_prec_text_dec + 4);
       if( !(options & OPTION_SUPPRESS_DELTA))
          snprintf_append( buff, sizeof( buff), "-delta ");
+      if( showing_delta_sigmas)
+         snprintf_append( buff, sizeof( buff), "-sgDel ");
       if( !(options & OPTION_SUPPRESS_SOLAR_R))
          snprintf_append( buff, sizeof( buff), "-r---- ");
       if( !(options & OPTION_SUPPRESS_ELONG))
@@ -2280,14 +2455,19 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
       if( options & OPTION_ORBIT_PLANE_ANGLE)
          snprintf_append( buff, sizeof( buff), "-PlAng- ");
       if( abs_mag)
+         {
          snprintf_append( buff, sizeof( buff), " mag");
+         for( i = n_mag_places - 1; i; i--)
+            strlcat_error( buff, " ");
+         }
 
       if( options & OPTION_LUNAR_ELONGATION)
-         snprintf_append( buff, sizeof( buff), "  LuElo");
+         snprintf_append( buff, sizeof( buff),
+                     (cinfo->planet == 10 ? "  EaElo" : "  LuElo"));
       if( options & OPTION_MOTION_OUTPUT)
-         snprintf_append( buff, sizeof( buff), " -'/hr-- --PA--");
+         snprintf_append( buff, sizeof( buff), " -%s --PA--", motion_unit_text);
       if( options & OPTION_SEPARATE_MOTIONS)
-         snprintf_append( buff, sizeof( buff), " -RA--'/hr--dec-");
+         snprintf_append( buff, sizeof( buff), " -RA--%sdec-", motion_unit_text);
 
       if( options & OPTION_ALT_AZ_OUTPUT)
          snprintf_append( buff, sizeof( buff), " alt -az");
@@ -2301,6 +2481,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
          snprintf_append( buff, sizeof( buff), " Maz");
       if( options & OPTION_RADIAL_VEL_OUTPUT)
          snprintf_append( buff, sizeof( buff), "  rvel-");
+      if( showing_rvel_sigmas)
+         snprintf_append( buff, sizeof( buff), "  sigRV");
       if( options & OPTION_SPACE_VEL_OUTPUT)
          snprintf_append( buff, sizeof( buff), "  svel-");
       if( show_radar_data)
@@ -2313,13 +2495,15 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
          snprintf_append( buff, sizeof( buff), " \"-sig-PA");
       if( ephem_type == OPTION_OBSERVABLES)
          {
-         const char *cf_filename = "eph_json.txt";
+         const char *alt_file_name = get_environment_ptr( "ALT_EPHEM_FILENAME");
 
          header = (char *)malloc( 1024);
          assert( header);
          strlcpy_err( header, buff, 1024);
-         computer_friendly_ofile = fopen_ext( cf_filename, is_default_ephem ? "tfcw+" : "fw+");
-         assert( computer_friendly_ofile);
+         if( !*alt_file_name)
+            alt_file_name = "alt_eph.txt";
+         computer_friendly_ofile = fopen_ext( alt_file_name,
+                                          is_default_ephem ? "tfcw+" : "fw+");
          }
       if( show_radar_data)
          exposure_config.min_alt = rdata.altitude_limit * 180. / PI;
@@ -2365,6 +2549,9 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
       double geo_posn[3], geo_vel[3];
       double delta_t;
       long rgb = 0;
+      double sum_r = 0., sum_r2 = 0.;     /* for uncertainty in r */
+      double sum_rv = 0., sum_rv2 = 0.;   /* for uncertainty in rvel */
+      double nominal_r = 0., nominal_rv = 0.;
 
       if( use_observation_times)
          {
@@ -2375,7 +2562,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
       else if( *stepsize == 't')
          {
          curr_jd = list_of_ephem_times[i];    /* this time is in UTC */
-         if( *timescale)            /* we really want TT times */
+         if( *timescale == 'T')            /* we really want TT times */
             curr_jd += td_minus_utc( curr_jd) / seconds_per_day;
          }
       else if( *stepsize == 'a')
@@ -2397,7 +2584,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
       delta_t = td_minus_utc( curr_jd) / seconds_per_day;
       if( use_observation_times)
          curr_jd -= delta_t;
-      if( *timescale)                     /* we want a TT ephemeris */
+      if( *timescale == 'T')              /* we want a TT ephemeris */
          {
          ephemeris_t = curr_jd;
          utc = curr_jd - delta_t;
@@ -2419,6 +2606,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
          double orbi_after_light_lag[MAX_N_PARAMS];
          OBSERVE temp_obs;
          int j;
+         const char *sigma_delta_placeholder = "!sigma_delta!";
+         const char *sigma_rvel_placeholder = "!sigma_rv!";
 
          integrate_orbit( orbi, prev_ephem_t, ephemeris_t);
          for( j = 0; j < 3; j++)
@@ -2486,6 +2675,15 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
             v_dot_r += topo[j] * topo_vel[j];
          r = vector3_length( topo);
          radial_vel = v_dot_r / r;
+         if( !obj_n)
+            {
+            nominal_r = r;
+            nominal_rv = radial_vel;
+            }
+         sum_r += r - nominal_r;
+         sum_r2 += (r - nominal_r) * (r - nominal_r);
+         sum_rv += radial_vel - nominal_rv;
+         sum_rv2 += (radial_vel - nominal_rv) * (radial_vel - nominal_rv);
          if( *stepsize == 'a')
             max_auto_step = fabs( atof( stepsize + 1)) * r / vector3_length( topo_vel);
          if( (ephem_type == OPTION_STATE_VECTOR_OUTPUT ||
@@ -2498,7 +2696,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
             int end_loc;
             const char *vect_opts = get_environment_ptr( "VECTOR_OPTS");
 
-            snprintf( buff, sizeof( buff), "%.5f", curr_jd);
+            snprintf_err( buff, sizeof( buff), "%.5f", curr_jd);
             sscanf( vect_opts, "%d,%lf,%lf%n",
                         &ecliptic_coords, &posn_mult, &tval, &end_loc);
             assert( tval);
@@ -2529,7 +2727,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                }
             for( j = 10, tval = posn_mult; tval > 1.2; j--)
                tval /= 10.;
-            snprintf( format_text, sizeof( format_text), "%%21.%df", j + 6);
+            snprintf_err( format_text, sizeof( format_text), "%%21.%df", j + 6);
             for( j = 0; j < 3; j++)
                snprintf_append( buff, sizeof( buff), format_text,
                                  topo[j] * posn_mult);
@@ -2538,7 +2736,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                strlcat_error( buff, " ");
                for( j = 12, tval = vel_mult; tval > 1.2; j--)
                   tval /= 10.;
-               snprintf( format_text, sizeof( format_text), "%%21.%df", j+5);
+               snprintf_err( format_text, sizeof( format_text), "%%21.%df", j+5);
                for( j = 0; j < 3; j++)
                   snprintf_append( buff, sizeof( buff), format_text,
                                  topo_vel[j] * vel_mult);
@@ -2586,7 +2784,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                       | FULL_CTIME_YEAR_FIRST | FULL_CTIME_MONTH_DAY
                       | FULL_CTIME_MONTHS_AS_DIGITS
                       | FULL_CTIME_LEADING_ZEROES);
-                  snprintf( buff, sizeof( buff), "Close approach at %s: ",
+                  snprintf_err( buff, sizeof( buff), "Close approach at %s: ",
                                  date_buff);
                   format_dist_in_buff( buff + strlen( buff), dist);
                   fprintf( ofile, "%s\n", buff);
@@ -2621,21 +2819,25 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
 
                   if( *offset_dir)
                      {
-                     char date_buff[80];
-                     static bool path_already_made = false;
+                     char date_buff[80], packed_buff[20];
 
                      strlcpy_error( tbuff, offset_dir);
-                     strlcat_error( tbuff, "/");
-                     if( !path_already_made)
-                        make_path_available( tbuff);
-                     path_already_made = true;
+                     text_search_and_replace( tbuff, "%p",
+                                 real_packed_desig( packed_buff, obs->packed_id));
+                     text_search_and_replace( tbuff, "%c", ephem_mpc_code);
                      full_ctime( date_buff, curr_jd,
                            FULL_CTIME_FORMAT_HH_MM | FULL_CTIME_YMD
                          | FULL_CTIME_MONTHS_AS_DIGITS | FULL_CTIME_NO_SPACES
                          | FULL_CTIME_NO_COLONS | FULL_CTIME_LEADING_ZEROES);
-                     strlcat_error( tbuff, date_buff);
-                     strlcat_error( tbuff, ".off");
+                     text_search_and_replace( tbuff, "%t", date_buff);
                      offset_ofile = fopen( tbuff, "wb");
+                     if( !offset_ofile)
+                        {
+                        make_path_available( tbuff);
+                        offset_ofile = fopen( tbuff, "wb");
+                        }
+                     if( !offset_ofile)
+                        debug_printf( "Couldn't open '%s'\n", tbuff);
                      assert( offset_ofile);
                      full_ctime( date_buff, curr_jd,
                             FULL_CTIME_FORMAT_HH_MM | FULL_CTIME_YMD);
@@ -2654,6 +2856,46 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                strlcat_error( buff, tbuff);
                snprintf_append( alt_buff, sizeof( alt_buff), " %8.3f %3d",
                                     dist * 3600. * 180. / PI, int_pa);
+               if( showing_delta_sigmas)
+                  {
+                  double sigma_r;
+                  char sigma_buff[20];
+
+                  sum_r /= (double)n_objects;
+                  sum_r2 /= (double)n_objects;
+                  sigma_r = sqrt( sum_r2 - sum_r * sum_r);
+                  alt_tptr = alt_buff + strlen( alt_buff);
+                  snprintf_err( sigma_buff, sizeof( sigma_buff), " %17.12f", sigma_r);
+                  text_search_and_replace( alt_buff, sigma_delta_placeholder,
+                                 sigma_buff);
+                  if( !computer_friendly)
+                     {
+
+                     use_au_only = (show_radar_data || (r > 999999. / AU_IN_KM));
+                     format_dist_in_buff( sigma_buff, sigma_r);
+                     use_au_only = false;
+                     }
+                  text_search_and_replace( buff, sigma_delta_placeholder,
+                                 sigma_buff);
+                  }
+               if( showing_rvel_sigmas)
+                  {
+                  double sigma_rv;
+                  char sigma_buff[20];
+
+                  sum_rv /= (double)n_objects;
+                  sum_rv2 /= (double)n_objects;
+                  sigma_rv = sqrt( sum_rv2 - sum_rv * sum_rv);
+                  sigma_rv *= AU_IN_KM / seconds_per_day;
+
+                  snprintf_err( sigma_buff, sizeof( sigma_buff),
+                                      " %11.6f", sigma_rv);
+                  text_search_and_replace( alt_buff, sigma_rvel_placeholder,
+                                 sigma_buff);
+                  format_velocity_in_buff( sigma_buff, sigma_rv);
+                  text_search_and_replace( buff, sigma_rvel_placeholder,
+                                 sigma_buff);
+                  }
                }
             if( !obj_n)
                {
@@ -2702,15 +2944,16 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                            vect[k] = -obs_posn_equatorial[k];
                      else
                         {           /* we want the lunar posn */
-                        double moon_dist, earth_loc[3], lunar_eclipse_mag;
+                        double moon_dist, lunar_eclipse_mag;
+                        double moon_loc[3], earth_loc[3];
                         const double lunar_radius = 1737.4 / AU_IN_KM;
 #ifdef SHOW_LUNAR_OFFSETS
                         double moon_lon, moon_lat, obs_lon, obs_lat;
                         char date_buff[80];
 #endif
 
-                        earth_lunar_posn( ephemeris_t, earth_loc, vect);
-                        lunar_eclipse_mag = lunar_eclipse_magnitude( earth_loc, vect);
+                        earth_lunar_posn( ephemeris_t, earth_loc, moon_loc);
+                        lunar_eclipse_mag = lunar_eclipse_magnitude( earth_loc, moon_loc);
                         if( lunar_eclipse_mag > -0.75 &&
                                        !*get_environment_ptr( "NO_LUNAR_ECLIPSES"))
                            {
@@ -2726,26 +2969,28 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                               lunar_eclipse_mag_drop = 9.;
                            }
                         for( k = 0; k < 3; k++)
-                           vect[k] -= obs_posn[k];
+                           vect[k] = moon_loc[k] - obs_posn[k];
+                        if( cinfo->planet == 10)    /* lunicentric viewpoint; */
+                           for( k = 0; k < 3; k++)  /* show earth elongs instead */
+                              vect[k] = earth_loc[k] - obs_posn[k];
                         moon_dist = vector3_length( vect);
 #ifdef SHOW_LUNAR_OFFSETS
                         moon_lon = atan2( vect[1], vect[0]);
                         moon_lat = asine( vect[2] / moon_dist);
 #endif
-                        if( moon_dist)
-                           cos_elong = dot_product( obs_posn, vect)
+                        cos_elong = dot_product( obs_posn, vect)
                                  / (vector3_length( obs_posn) * moon_dist);
-                        else     /* lunicentric ephems;  'lunar elong' is undefined */
-                           cos_elong = -1.;
                         lunar_elong = acose( -cos_elong);
                         ecliptic_to_equatorial( vect);   /* mpc_obs.cpp */
                         fraction_illum = shadow_check( earth_loc, orbi_after_light_lag,
                                     EARTH_RADIUS_IN_AU);
+                        fraction_illum *= shadow_check( moon_loc, orbi_after_light_lag,
+                                    LUNAR_RADIUS_IN_AU);
                         if( moon_dist)
                            cos_elong = dot_product( vect, topo)
                                         / (moon_dist * vector3_length( topo));
                         else
-                           cos_elong = 1.;
+                           cos_elong = -1.;
                         dist_moon = acose( cos_elong);
 
 #ifdef SHOW_LUNAR_OFFSETS
@@ -2762,7 +3007,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                               (obs_lon - moon_lon) * 180. / PI,
                               (obs_lat - moon_lat) * 180. / PI);
 #endif
-                        if( dist_moon < lunar_radius / moon_dist)
+                        if( moon_dist && dist_moon < lunar_radius / moon_dist)
                            visibility_char = (vector3_length( topo) < moon_dist ?
                                        'l' : 'L');  /* l=obj transits moon, */
                         }                           /* L=obj behind moon   */
@@ -2778,13 +3023,19 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                      }
                   temp_latlon.x = cinfo->lon;
                   temp_latlon.y = cinfo->lat;
-                  full_ra_dec_to_alt_az( &obj_ra_dec, &alt_az[j], NULL,
-                                 &temp_latlon, utc, &hour_angle[j]);
-                  full_ra_dec_to_alt_az( &obj_ra_dec, &best_alt_az[j], NULL,
-                                 &best_latlon, utc, NULL);
+                  ra_dec_to_alt_az_2( cinfo->planet, &obj_ra_dec, &alt_az[j], &temp_latlon,
+                                utc, &hour_angle[j]);
+                  ra_dec_to_alt_az_2( cinfo->planet, &obj_ra_dec, &best_alt_az[j], &best_latlon,
+                                utc, NULL);
                   alt_az[j].x = centralize_ang( alt_az[j].x + PI);
                   best_alt_az[j].x = centralize_ang( best_alt_az[j].x + PI);
                   }
+               if( is_geocentric && 3 != cinfo->planet)
+                  for( j = 0; j < 3; j++)
+                     {     /* haven't generalized locations for off-earth */
+                     best_alt_az[j].x = alt_az[j].x = 0.;
+                     best_alt_az[j].y = alt_az[j].y = (j ? -PI / 2. : PI / 2.);
+                     }
                if( is_under_horizon( alt_az[0].y * 180. / PI,
                                      alt_az[0].x * 180. / PI, &exposure_config))
                   {
@@ -2875,13 +3126,13 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                   const char *mpc_code = (use_observation_times ?
                                  obs[i].mpc_code : note_text + 1);
 
-                  snprintf( fake_line, sizeof( fake_line),
+                  snprintf_err( fake_line, sizeof( fake_line),
                            " | |EphemOb|CCD|%.3s |", mpc_code);
                   iso_time( fake_line + strlen( fake_line), curr_jd, 6);
                   snprintf_append( fake_line, sizeof( fake_line),
                            "|%18.14f|%+18.14f", ra * 15, dec);
                   }
-               snprintf( alt_buff, sizeof( alt_buff), "%18.10f ", curr_jd);
+               snprintf_err( alt_buff, sizeof( alt_buff), "%17.9f ", curr_jd);
                if( computer_friendly)
                   strlcpy( buff, alt_buff, sizeof( buff));
                else
@@ -2921,6 +3172,11 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                      use_au_only = show_radar_data;
                      format_dist_in_buff( buff + strlen( buff), r);
                      use_au_only = false;
+                     }
+                  if( showing_delta_sigmas)
+                     {
+                     strlcat_error( buff, sigma_delta_placeholder);
+                     strlcat_error( alt_buff, sigma_delta_placeholder);
                      }
                   }
                if( !(options & OPTION_SUPPRESS_SOLAR_R))
@@ -2984,9 +3240,9 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                   {
                   if( mags_per_arcsec2 > 99.9)
                      mags_per_arcsec2 = 99.99;
-                  snprintf( tbuff, sizeof( tbuff), " %5.2f", mags_per_arcsec2);
+                  snprintf_err( tbuff, sizeof( tbuff), " %5.2f", mags_per_arcsec2);
                   strlcat_error( alt_buff,
-                           (mags_per_arcsec2 > 99.9) ? " null" : tbuff);
+                           (mags_per_arcsec2 > 99.9) ? "  null" : tbuff);
                   snprintf_append( alt_buff, sizeof( alt_buff), " %06lx", rgb);
                   if( mags_per_arcsec2 > 99.9 && !computer_friendly)
                      strlcpy_error( tbuff, " --.--");
@@ -3035,7 +3291,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                                     curr_mag, (exp_time ? exp_time : 30.));
                      const char *fmt = (snr > 99. ? " %5.0f" : " %5.2f");
 
-                     snprintf( tbuff, sizeof( tbuff), fmt, snr);
+                     snprintf_err( tbuff, sizeof( tbuff), fmt, snr);
                      strlcat_error( buff, tbuff);
                      strlcat_error( alt_buff, tbuff);
                      }
@@ -3083,7 +3339,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
 
                *tbuff = '\0';
                if( options & OPTION_PHASE_ANGLE_OUTPUT)
-                  snprintf( tbuff, sizeof( tbuff), " %8.4f", phase_ang * 180. / PI);
+                  snprintf_err( tbuff, sizeof( tbuff), " %8.4f", phase_ang * 180. / PI);
 
 
                if( options & OPTION_PHASE_ANGLE_BISECTOR)
@@ -3169,12 +3425,16 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                   {
                   double orbit_norm[3], unused_pa, dist;
                   DPT orbit_pole;
+                  bool is_retrograde;
 
                   vector_cross_product( orbit_norm, orbi, orbi + 3);
+                  is_retrograde = (orbit_norm[2] < 0.);
                   ecliptic_to_equatorial( orbit_norm);
                   vector_to_polar( &orbit_pole.x, &orbit_pole.y, orbit_norm);
                   calc_dist_and_posn_ang( &ra_dec.x, &orbit_pole.x,
                                         &dist, &unused_pa);
+                  if( is_retrograde)    /* odd convention : PlAng is +ive if */
+                     dist = PI - dist;  /* observer is 'above' the orbit plane */
                   snprintf_append( tbuff, sizeof( buff), " %7.3f",
                                     dist * 180. / PI - 90.);
                   }
@@ -3183,19 +3443,21 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                strlcat_error( alt_buff, tbuff);
                if( abs_mag)           /* don't show a mag if you dunno how bright */
                   {                   /* the object really is! */
-                  const bool two_place_mags =
-                                   (*get_environment_ptr( "MAG_DIGITS") == '2');
-
-                  if( two_place_mags)
+                  if( n_mag_places > 1)
                      {
-                     const char *fmt = (curr_mag > 99.8 ? " %5.1f" : " %5.2f");
+                     char format[7];
 
-                     snprintf_append( buff, sizeof( buff), fmt, curr_mag + .005);
+                     strlcpy_error( format, " %n.nf");
+                     format[2] = '3' + n_mag_places;
+                     format[4] = '0' + n_mag_places;
+                     if( curr_mag > 99.8)
+                        format[4]--;
+                     snprintf_append( buff, sizeof( buff), format, curr_mag);
                      }
                   else if( fraction_illum == 0.)
                      strlcat_error( buff, " Sha ");
                   else if( curr_mag < 99 && curr_mag > -9.9)
-                     snprintf_append( buff, sizeof( buff), " %4.1f", curr_mag + .05);
+                     snprintf_append( buff, sizeof( buff), " %4.1f", curr_mag);
                   else
                      snprintf_append( buff, sizeof( buff), " %3d ", (int)( curr_mag + .5));
                   if( phase_ang > PI * 2. / 3.)    /* over 120 degrees */
@@ -3208,7 +3470,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                         if( endptr[-2] == '.')
                            endptr[-2] = '?';
                         }
-                  snprintf_append( alt_buff, sizeof( alt_buff), " %6.3f", curr_mag + .0005);
+                  snprintf_append( alt_buff, sizeof( alt_buff), " %6.3f", curr_mag);
                   }
 
                if( options & OPTION_LUNAR_ELONGATION)
@@ -3230,8 +3492,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                   compute_observation_motion_details( &temp_obs, &m);
                   if( options & OPTION_MOTION_OUTPUT)
                      {
-                     format_motion( end_ptr + 1, m.total_motion);
-                     snprintf( end_ptr + 9, 7, "%5.1f ",
+                     format_motion( end_ptr + 1, m.total_motion * motion_units);
+                     snprintf_err( end_ptr + 9, 7, "%5.1f ",
                                      m.position_angle_of_motion);
                      end_ptr[8] = end_ptr[0] = ' ';
                      snprintf_append( alt_buff, sizeof( alt_buff),
@@ -3243,8 +3505,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                      }
                   if( options & OPTION_SEPARATE_MOTIONS)
                      {
-                     format_motion( end_ptr + 1, m.ra_motion);
-                     format_motion( end_ptr + 9, m.dec_motion);
+                     format_motion( end_ptr + 1, m.ra_motion * motion_units);
+                     format_motion( end_ptr + 9, m.dec_motion * motion_units);
                      end_ptr[8] = end_ptr[0] = ' ';
                      snprintf_append( alt_buff, sizeof( alt_buff),
                                  " %f %f", m.ra_motion, m.dec_motion);
@@ -3275,7 +3537,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                   *tbuff = '\0';
                   if( show_alt)
                      {
-                     snprintf( tbuff, sizeof( tbuff), " %c%02d",
+                     snprintf_err( tbuff, sizeof( tbuff), " %c%02d",
                                        (alt > 0. ? '+' : '-'),
                                        (int)( fabs( alt) + .5));
                      snprintf_append( alt_buff, sizeof( alt_buff), " %8.4f", alt);
@@ -3300,6 +3562,11 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                   snprintf_append( alt_buff, sizeof( alt_buff),
                                       " %11.6f", rvel_in_km_per_sec);
                   format_velocity_in_buff( end_ptr, rvel_in_km_per_sec);
+                  if( showing_rvel_sigmas)
+                     {
+                     strlcat_error( buff, sigma_rvel_placeholder);
+                     strlcat_error( alt_buff, sigma_rvel_placeholder);
+                     }
                   }
                if( options & OPTION_SPACE_VEL_OUTPUT)
                   {
@@ -3348,11 +3615,11 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
 
                   alt_in_meters = find_lat_lon_alt( utc, geo, cinfo->planet, lat_lon,
                            *get_environment_ptr( "GEOMETRIC_GROUND_TRACK") == '1');
-                  snprintf( tbuff, 30, "%9.4f %+08.4f %10.3f",
+                  snprintf( tbuff, 31, "%9.4f %+08.4f %10.2f",
                         lat_lon[0] * 180. / PI,
                         lat_lon[1] * 180. / PI,
                         alt_in_meters / meters_per_km);
-                  tbuff[30] = '\0';
+                  tbuff[29] = '\0';
                   strlcat_error( alt_buff, tbuff);
                   strlcat_error( buff, tbuff);
                   }
@@ -3481,19 +3748,6 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
       }
    return( 0);
 }
-/* The above ephemeris code may insert a six-character hexadecimal
-color,  computed using sky background brightness data,  prefaced by
-'$'.  This should be removed before the line is shown to a user.
-The RGB value is returned,  and may (or may not) be made use of. */
-
-int remove_rgb_code( char *buff)
-{
-   unsigned rval = (unsigned)-1;
-
-   while( (buff = strchr( buff, '$')) && sscanf( buff + 1, "%06x", &rval) == 1)
-      memmove( buff, buff + 7, strlen( buff + 6));
-   return( (int)rval);
-}
 
 /* "is_topocentric_mpc_code( )" is taken to mean "can you compute alt/az
 ephems and/or visibility info from this station",  and is used in
@@ -3509,7 +3763,7 @@ bool is_topocentric_mpc_code( const char *mpc_code)
 
 static double get_telescope_primary_diameter( const char *mpc_code)
 {
-   FILE *ifile = fopen_ext( "details.txt", "fclrb");
+   FILE *ifile = fopen_ext( "details.txt", "fcrb");
    char buff[100];
    double rval = 0.;
    int in_code_section = 0;
@@ -3535,8 +3789,8 @@ static void get_scope_params( const char *mpc_code, expcalc_config_t *c)
    const char *scope_json_file = get_environment_ptr( "SCOPE_JSON_FILE");
    char filename[120];
 
-   snprintf( filename, sizeof( filename), "site_%.3s.txt", mpc_code);
-   ifile = fopen_ext( filename, "clrb");
+   snprintf_err( filename, sizeof( filename), "site_%.3s.txt", mpc_code);
+   ifile = fopen_ext( filename, "crb");
    if( ifile)
       {
       scope_details = find_expcalc_config_from_mpc_code( mpc_code, ifile, c);
@@ -3555,7 +3809,7 @@ static void get_scope_params( const char *mpc_code, expcalc_config_t *c)
       }
    if( scope_details == EXPCALC_NO_CONFIG_FOUND)
       {
-      ifile = fopen_ext( "scope.json", "fclrb");
+      ifile = fopen_ext( "scope.json", "fcrb");
       scope_details = find_expcalc_config_from_mpc_code( mpc_code, ifile, c);
       fclose( ifile);
       }
@@ -3586,7 +3840,7 @@ int ephemeris_in_a_file_from_mpc_code( const char *filename,
    assert( strlen( mpc_code) >= 3);
    get_observer_data( mpc_code, buff, &cinfo);
    strlcpy_error( ephem_mpc_code, mpc_code);
-   snprintf( note_text, sizeof( note_text),
+   snprintf_err( note_text, sizeof( note_text),
                     "(%s) %s", mpc_code, mpc_station_name( buff));
    get_object_name( buff, obs->packed_id);
    snprintf_append( note_text, sizeof( note_text), ": %s", buff);
@@ -3607,129 +3861,6 @@ int ephemeris_in_a_file_from_mpc_code( const char *filename,
    return( rval);
 }
 
-static int64_t ten_to_the_nth( int n)
-{
-   int64_t rval = 1;
-
-   while( n--)
-      rval *= 10;
-   return( rval);
-}
-
-/* See comments for get_ra_dec() in mpc_fmt.cpp for info on the meaning  */
-/* of 'precision' in this function.                                      */
-
-static void output_angle_to_buff( char *obuff, double angle, int precision)
-{
-   int n_digits_to_show = 0;
-   int64_t power_mul, fraction;
-   size_t i, full_len = 12;
-
-   if( (precision >= 100 && precision <= 116) /* decimal quantity, dd.dd... */
-        || ( precision >= 200 && precision <= 215)) /* decimal ddd.dd... */
-      {
-      const int two_digits = (precision <= 200);
-
-      n_digits_to_show = precision % 100;
-      power_mul = ten_to_the_nth( n_digits_to_show);
-      fraction = (int64_t)( angle * (two_digits ? 1. : 15.) * (double)power_mul + .5);
-
-      snprintf( obuff, 4, (two_digits ? "%02u" : "%03u"),
-                  (int)( fraction / power_mul));
-      fraction %= power_mul;
-      }
-   else
-      switch( precision)
-         {
-         case -1:       /* hh mm,  integer minutes */
-         case -2:       /* hh mm.m,  tenths of minutes */
-         case -3:       /* hh mm.mm,  hundredths of minutes */
-         case -4:       /* hh mm.mmm,  milliminutes */
-         case -5:       /* hh mm.mmmm */
-         case -6:       /* hh mm.mmmmm */
-         case -7:       /* hh mm.mmmmmm */
-            {
-            n_digits_to_show = -1 - precision;
-            power_mul = ten_to_the_nth( n_digits_to_show);
-            fraction = (int64_t)( angle * 60. * (double)power_mul + .5);
-            snprintf( obuff, 6, "%02u %02u", (unsigned)( fraction / ((int64_t)60 * power_mul)),
-                                         (unsigned)( fraction / power_mul) % 60);
-            fraction %= power_mul;
-            }
-            break;
-         case 0:        /* hh mm ss,  integer seconds */
-         case 1:        /* hh mm ss.s,  tenths of seconds */
-         case 2:        /* hh mm ss.ss,  hundredths of seconds */
-         case 3:        /* hh mm ss.sss,  thousands of seconds */
-         case 4: case 5: case 6:    /* possible extra digits in ephems */
-         case 7: case 8: case 9:
-         case 307:      /* hhmmsss,  all packed together:  tenths */
-         case 308:      /* hhmmssss,  all packed together: hundredths */
-         case 309:      /* milliseconds (or milliarcseconds) */
-         case 310:      /* formats 307-312 are the 'super-precise' formats */
-         case 311:
-         case 312:      /* microseconds (or microarcseconds) */
-         case 400:      /* (RA) ddd mm ss,  integer arcseconds */
-         case 401:      /* (RA) ddd mm ss.s,  tenths of arcseconds */
-         case 402:      /* (RA) ddd mm ss.ss,  centiarcsec */
-            {
-            const char *format = "%02u %02u %02u";
-
-            if( precision >= 400)
-               {
-               format = "%03u %02u %02u";
-               precision -= 400;
-               angle *= 15.;
-               }
-            n_digits_to_show = precision % 306;
-            power_mul = ten_to_the_nth( n_digits_to_show);
-            fraction = (int64_t)( angle * 3600. * (double)power_mul + .5);
-            snprintf( obuff, 10, format,
-                     (unsigned)( fraction / ((int64_t)3600 * power_mul)),
-                     (unsigned)( fraction / ((int64_t)60 * power_mul)) % 60,
-                     (unsigned)( fraction / power_mul) % 60);
-            fraction %= power_mul;
-            if( precision > 306)          /* remove spaces: */
-               text_search_and_replace( obuff, " ", "");
-            }
-            break;
-         default:                  /* try to show the angle,  but indicate */
-            if( angle > -1000. && angle < 1000.)   /* the format is weird  */
-               snprintf( obuff, 10, "?%.5f", angle);
-            else
-               strlcpy_error( obuff, "?");
-            fraction = 0;   /* not really necessary;  evades nuisance GCC warning */
-            break;
-         }
-                  /* Formats not used in astrometry -- they don't fit the */
-                  /* field size for punched-card data,  but are used in ephems */
-   if( precision >= 4 && precision <= 11)    /* 'overlong' dd mm ss.ssss... */
-      full_len += (size_t)( precision - 3);
-   if( precision >= 209 && precision <= 215) /* 'overlong' ddd.ddddd... */
-      full_len += (size_t)( precision - 208);
-   if( precision >= 110 && precision <= 116) /* 'overlong' dd.dddddd... */
-      full_len += (size_t)( precision - 109);
-   if( n_digits_to_show)
-      {
-      char format[8];
-
-      if( precision < 307 || precision > 312)   /* omit decimal point for */
-         strcat( obuff, ".");                    /* super-precise formats */
-      assert( n_digits_to_show > 0 && n_digits_to_show < 20);
-      snprintf_err( format, sizeof( format), "%%0%dld", n_digits_to_show);
-      snprintf_append( obuff, full_len + 1, format, (long)fraction);
-      }
-   for( i = strlen( obuff); i < full_len; i++)
-      obuff[i] = ' ';
-   obuff[full_len] = '\0';
-}
-
-static void output_signed_angle_to_buff( char *obuff, const double angle,
-                               const int precision)
-{
-   *obuff++ = (angle < 0. ? '-' : '+');
-   output_angle_to_buff( obuff, fabs( angle), precision);
-}
 
 /* 'put_residual_into_text( )' expresses a residual,  from 0 to 180 degrees, */
 /* such that the text starts with a space,  followed by four characters,   */
@@ -3760,17 +3891,16 @@ static void put_residual_into_text( char *text, const double resid,
 
    if( resid_format & RESIDUAL_FORMAT_COMPUTER_FRIENDLY)
       {                   /* resids in arcseconds at all times,  with */
-      if( resid > -9.9999 && resid < 9.9999)
-         snprintf_err( text, 11, " %+8.6f", resid);    /* some added precision */
+      snprintf( text, 11, " %+8.6f", resid);    /* some added precision */
       return;
       }
    if( zval > 999. * 3600.)      /* >999 degrees: error must have occurred */
       strlcpy_err( text, " Err!", 6);
    else if( zval > 59940.0)             /* >999': show integer degrees */
       snprintf_err( text, 6, "%4.0fd", zval / 3600.);
-   else if( zval > 9999.9)              /* 999' > x > 9999": show ###' arcmin */
+   else if( zval > 9999.)              /* 999' > x > 9999": show ###' arcmin */
       snprintf_err( text, 6, "%4.0f'", zval / 60.);
-   else if( zval > 99.9)
+   else if( zval > 99.)
       snprintf_err( text, 6, "%5.0f", zval);
    else if( zval > .99 && zval < 9.99 && precise)
       snprintf_err( text, 6, "%5.2f", zval);
@@ -3779,9 +3909,9 @@ static void put_residual_into_text( char *text, const double resid,
    else if( (resid_format & RESIDUAL_FORMAT_OVERPRECISE) && zval < .00999)
       {          /* 'high-precision' residuals */
       unsigned i;
-      const char *lower_si_prefixes = " munpfazy ";
+      const char *lower_si_prefixes = " munpfazyrq ";
 
-      for( i = 0; zval < 0.99 && i < 9; i++)
+      for( i = 0; zval < 0.99 && i < 11; i++)
          zval *= 1000.;
       snprintf_err( text, 6, (zval < 9.9 ? "%4.1f%c" : "%4.0f%c"),
                      zval, lower_si_prefixes[i]);
@@ -3890,6 +4020,34 @@ double utc_from_td( const double jdt, double *delta_t)
    return( utc);
 }
 
+/* The following two functions are used to get the 'original' RA/decs,
+i.e.,  those without debiasing applied,  as seen in the original ADES
+or 80-column data.   */
+
+double original_observed_ra( const OBSERVE *obs)
+{
+   extern int apply_debiasing;
+   double rval = obs->ra;
+
+   if( apply_debiasing)
+      rval += obs->ra_bias * PI / (180. * 3600. * cos( obs->dec));
+   if( rval < 0.)
+      rval += PI + PI;
+   if( rval > PI + PI)
+      rval -= PI + PI;
+   return( rval);
+}
+
+double original_observed_dec( const OBSERVE *obs)
+{
+   extern int apply_debiasing;
+   double rval = obs->dec;
+
+   if( apply_debiasing)
+      rval += obs->dec_bias * PI / (180. * 3600.);
+   return( rval);
+}
+
 /* format_observation( ) takes an observation and produces text for it,
    suitable for display on a console (findorb) or in a Windoze scroll
    box (FIND_ORB),  or for writing to a file.  */
@@ -3900,7 +4058,6 @@ void format_observation( const OBSERVE FAR *obs, char *text,
    double angle;
    char xresid[30], yresid[30];
    int i;
-   extern int apply_debiasing;
    const int base_format = (resid_format & 3);
    const int base_time_format = obs->time_precision / 10;
    const int n_time_digits = obs->time_precision % 10;
@@ -3925,12 +4082,13 @@ void format_observation( const OBSERVE FAR *obs, char *text,
             i = int_to_mutant_hex_char( year / 100);
             if( year < 0 || year > 6199)
                i = '!';
-            snprintf( text, 6, "%c%02u%02u",   /* show century letter, 2digit yr, mo */
+            snprintf_err( text, 6, "%c%02u%02u",   /* show century letter, 2digit yr, mo */
                     (char)i, (unsigned)( year % 100), (unsigned)month);
 
             if( base_time_format != 3)
                {
-               show_dd_hh_mm_ss_point_sss( text + 5, day, n_time_digits);
+               show_dd_hh_mm_ss_point_sss( text + 5, day,
+                           (obs->note2 == 'R' ? 0 : n_time_digits));
                text[7] = ':';
                text[10] = text[11];     /* Turn dd hh:mm:ss into dd:hhmmss. This */
                text[11] = text[12];     /* corresponds to the somewhat weird way */
@@ -3945,12 +4103,12 @@ void format_observation( const OBSERVE FAR *obs, char *text,
                   text[12] = text[13] = ' ';
                }
             else
-               snprintf( text + 5, 13, "%012.9f", day);
+               snprintf_err( text + 5, 13, "%012.9f", day);
             break;
          case 4:        /* M056336.641592653: MJD formats 40-49 */
          case 1:        /* 2456336.641592653: JD formats 10-49 */
             {
-            snprintf( text, 18, "%017.9f",
+            snprintf_err( text, 18, "%017.9f",
                            utc - (base_time_format == 4 ? 2400000.5 : 0.));
             if( base_time_format == 4)
                *text = 'M';
@@ -3960,9 +4118,9 @@ void format_observation( const OBSERVE FAR *obs, char *text,
             {
             assert( n_time_digits <= 6);
             if( four_digit_years)
-               snprintf( text, 9, "%04ld\t%02d\t", year, month);
+               snprintf_err( text, 9, "%04ld\t%02d\t", year, month);
             else
-               snprintf( text, 7, "%02d\t%02d\t", abs( (int)year % 100), month);
+               snprintf_err( text, 7, "%02d\t%02d\t", abs( (int)year % 100), month);
             text += strlen( text);
             switch( GET_RESID_TIME_FORMAT( resid_format))
                {
@@ -3979,7 +4137,7 @@ void format_observation( const OBSERVE FAR *obs, char *text,
                                                       "%08.5f ",
                                                       "%09.6f" };
 
-                  snprintf( text, 10, date_format_text[n_time_digits], day);
+                  snprintf_err( text, 10, date_format_text[n_time_digits], day);
                   }
                   break;
                }
@@ -3994,11 +4152,7 @@ void format_observation( const OBSERVE FAR *obs, char *text,
             text[i] = ' ';
       snprintf_append( text, 40, "\t%c\t%s\t",
                    (obs->is_included ? ' ' : 'X'), obs->mpc_code);
-      angle = obs->ra * 12. / PI;
-      if( apply_debiasing)
-         angle += obs->ra_bias / (3600. * 15. * cos( obs->dec));
-      angle = fmod( angle, 24.);
-      if( angle < 0.) angle += 24.;
+      angle = original_observed_ra( obs) * 12. / PI;
       output_angle_to_buff( text + strlen( text), angle, obs->ra_precision);
       strcat( text, (base_format == RESIDUAL_FORMAT_FULL_WITH_TABS) ?
                               "\t" : "\t ");
@@ -4007,7 +4161,7 @@ void format_observation( const OBSERVE FAR *obs, char *text,
       {
       if( four_digit_years)
          *text++ = int_to_mutant_hex_char( year / 100);
-      snprintf( text, 11, "%02u%02u%02u %s", (unsigned)abs( (int)year % 100),
+      snprintf_err( text, 11, "%02u%02u%02u %s", (unsigned)abs( (int)year % 100),
                   (unsigned)month, (unsigned)day, obs->mpc_code);
       }
    text += strlen( text);
@@ -4030,7 +4184,7 @@ void format_observation( const OBSERVE FAR *obs, char *text,
 
          if( fabs( time_resid_in_microseconds) < 999.)
             {
-            snprintf( xresid, sizeof( xresid), "%+05d ", (int)( time_resid_in_microseconds * 10.));
+            snprintf_err( xresid, sizeof( xresid), "%+05d ", (int)( time_resid_in_microseconds * 10.));
             xresid[5] = xresid[0];
             xresid[0] = ' ';
             }
@@ -4047,7 +4201,7 @@ void format_observation( const OBSERVE FAR *obs, char *text,
             show_resid_in_sigmas( yresid, resid_in_hz / rinfo.doppler_sigma);
          else if( fabs( resid_in_hz) < 999.)
             {
-            snprintf( yresid, sizeof( yresid), "%+05d ", (int)( resid_in_hz * 10.));
+            snprintf_err( yresid, sizeof( yresid), "%+05d ", (int)( resid_in_hz * 10.));
             yresid[5] = yresid[0];
             yresid[0] = ' ';
             }
@@ -4069,27 +4223,30 @@ void format_observation( const OBSERVE FAR *obs, char *text,
       const char sign = (m.time_residual < 0. ? '-' : '+');
 
       if( abs_time_resid < .00094)               /* show as " -.4ms " */
-         snprintf( xresid, sizeof( xresid), " %c.%01dms", sign,
+         snprintf_err( xresid, sizeof( xresid), " %c.%01dms", sign,
                      (int)( abs_time_resid * 10000. + .5));
       else if( abs_time_resid < .099)            /* show as " -47ms " */
-         snprintf( xresid, sizeof( xresid), " %c%02dms", sign,
+         snprintf_err( xresid, sizeof( xresid), " %c%02dms", sign,
                      (int)( abs_time_resid * 1000. + .5));
       else if( abs_time_resid < .994)            /* show as " +.31s " */
-         snprintf( xresid, sizeof( xresid), " %c.%02ds", sign,
+         snprintf_err( xresid, sizeof( xresid), " %c.%02ds", sign,
                      (int)( abs_time_resid * 100. + .5));
       else if( abs_time_resid < 9.9)             /* show as " -4.7s " */
-         snprintf( xresid, sizeof( xresid), " %+4.1fs", m.time_residual);
-      else if( abs_time_resid < 999.)            /* show as " -217s " */
-         snprintf( xresid, sizeof( xresid), " %c%03ds", sign,
-                     (int)( abs_time_resid + .5));
-      else if( abs_time_resid / 60. < 999.)      /* show as " +133m " */
-         snprintf( xresid, sizeof( xresid), " %c%03dm", sign,
-                     (int)( abs_time_resid / 60. + .5));
-      else if( abs_time_resid / 3600. < 9999.)   /* show as " +027h " */
-         snprintf( xresid, sizeof( xresid), " %c%03dh", sign,
-                     (int)( abs_time_resid / 3600. + .5));
-      else                                   /* Give up after 1000 hours; */
-         strcpy( xresid, " !!!! ");          /* show "it's a long time"   */
+         snprintf_err( xresid, sizeof( xresid), " %+4.1fs", m.time_residual);
+      else
+          {
+          strcpy( xresid, " !!!! ");          /* show "it's a long time"   */
+          for( i = 0; xresid[1] == '!' && i < 4; i++)
+              {
+              static const double divisors[4] = { 1., 60., 3600., 86400. };
+              static const char *units = "smhd";
+              const double scaled = abs_time_resid / divisors[i];
+
+              if( scaled < 999.)
+                  snprintf_err( xresid, sizeof( xresid), " %c%03d%c", sign,
+                        (int)( scaled + 0.5), units[i]);
+              }
+           }
       put_residual_into_text( yresid, m.cross_residual, resid_format);
       }
    else
@@ -4105,14 +4262,19 @@ void format_observation( const OBSERVE FAR *obs, char *text,
          show_resid_in_sigmas( yresid, resid2);
          }
       }
+   if( !obs->posn_sigma_theta)
+      {
+      if( obs->posn_sigma_1 > 900000.)    /* means 'no dec supplied;  RA-only observation' */
+         strcpy( yresid, " ---- ");
+      if( obs->posn_sigma_2 > 900000.)    /* means 'no RA supplied; dec-only observation' */
+         strcpy( xresid, " ---- ");
+      }
    if( base_format != RESIDUAL_FORMAT_SHORT)
       {
       const char *tab_separator =
              ((base_format == RESIDUAL_FORMAT_FULL_WITH_TABS) ? "\t" : "");
 
-      angle = obs->dec * 180. / PI;
-      if( apply_debiasing)
-         angle += obs->dec_bias / 3600.;
+      angle = original_observed_dec( obs) * 180. / PI;
       if( angle < 0.)
          {
          angle = -angle;
@@ -4218,22 +4380,65 @@ static void put_sigma( char *buff, const double val)
    char tbuff[15];
 
    if( val < 0.099)
-      snprintf( tbuff, sizeof( tbuff), "%2.0fm", val * 1000.);
+      snprintf_err( tbuff, sizeof( tbuff), "%2.0fm", val * 1000.);
    else if( val < 9.9)
       {
-      snprintf( tbuff, sizeof( tbuff), "%.2f", val);
+      snprintf_err( tbuff, sizeof( tbuff), "%.2f", val);
       if( *tbuff == '0')         /* skip leading zero */
-         memmove( tbuff, tbuff + 1, strlen( tbuff));
+         memmove_err( tbuff, tbuff + 1, strlen( tbuff), tbuff + sizeof( tbuff));
       }
    else if( val < 999.)
-      snprintf( tbuff, sizeof( tbuff), "%3.0f", val);
+      snprintf_err( tbuff, sizeof( tbuff), "%3.0f", val);
    else if( val < 60. * 99.)
-      snprintf( tbuff, sizeof( tbuff), "%2.0f'", val / 60.);
+      snprintf_err( tbuff, sizeof( tbuff), "%2.0f'", val / 60.);
    else if( val < 3600. * 99.)
-      snprintf( tbuff, sizeof( tbuff), "%2.0fd", val / 3600.);
+      snprintf_err( tbuff, sizeof( tbuff), "%2.0fd", val / 3600.);
    else
       strcpy( tbuff, "---");
    memcpy( buff, tbuff, 3);
+}
+
+/* Some explanation of what may be weird-looking stuff in the following two
+functions : uncorrelated astrometric uncertainties are stored with
+posn_sigma_1 = rmsDec,  posn_sigma_2 = rmsRA, posn_sigma_theta = 0.
+Correlated are stored with posn_sigma_1 = major axis of the uncertainty
+ellipse,  posn_sigma_2 = minor axis,  and a non-zero posn_sigma_theta.
+
+When showing 'elliptical' uncertainties to humans,  we show rmsRA x rmsDec
+(and no position angle) if they're uncorrelated,  and major axis x minor
+axis and the position angle if they are correlated.  Which unfortunately
+means that in the first case,  we show posn_sigma_2 followed by
+posn_sigma_1;  in the correlated case,  we swap them.   */
+
+int error_ellipse_to_ades_value( const double major, const double minor, const double angle,
+         double *sigma_ra, double *sigma_dec, double *correl);
+
+void create_sigma_hover_text( char *buff, const size_t buffsize,
+                     const OBSERVE FAR *obs)
+{
+   strlcpy_err( buff, obs->packed_id, buffsize);
+   text_search_and_replace( buff, " ", "");
+   if( obs->posn_sigma_1 != obs->posn_sigma_2)
+      {
+      const int pa_tenths = (int)( obs->posn_sigma_theta * 1800. / PI + 0.5);
+      const double sig1 = (pa_tenths ? obs->posn_sigma_1 : obs->posn_sigma_2);
+      const double sig2 = (pa_tenths ? obs->posn_sigma_2 : obs->posn_sigma_1);
+
+      snprintf_append( buff, buffsize, "\n%.4g x %.4g", sig1, sig2);
+      if( pa_tenths)
+         {
+         double sigma_ra, sigma_dec, correl;
+
+         snprintf_append( buff, buffsize, " at PA %d.%d",
+                     pa_tenths / 10, pa_tenths % 10);
+         error_ellipse_to_ades_value( obs->posn_sigma_2, obs->posn_sigma_1, obs->posn_sigma_theta,
+                           &sigma_ra, &sigma_dec, &correl);
+         snprintf_append( buff, buffsize, "\nrmsRA=%.4g rmsDec=%.4g correl=%.4g",
+                           sigma_ra, sigma_dec, correl);
+         }
+      }
+   else
+      snprintf_append( buff, buffsize, "\nSigma %.4g", obs->posn_sigma_1);
 }
 
 int sigmas_in_columns_57_to_65 = 0;
@@ -4245,12 +4450,6 @@ void recreate_observation_line( char *obuff, const OBSERVE FAR *obs,
    int mag_digits_to_erase = 0;
    OBSERVE tobs = *obs;
 
-   if( obs->note2 == 'R')     /* for radar obs,  we simply store the */
-      {                       /* original observation line           */
-      strlcpy_err( obuff, obs->second_line + 81, 81);
-      return;
-      }
-// set_obs_to_microday( &tobs);
    switch( GET_RESID_RA_DEC_FORMAT( residual_format))
       {
       case 0:           /* use same format as obs was reported in */
@@ -4276,19 +4475,30 @@ void recreate_observation_line( char *obuff, const OBSERVE FAR *obs,
    obuff[13] = obs->note1;
    obuff[14] = obs->note2;
    memcpy( obuff + 15, buff, 17);      /* date/time */
+   if( obs->note2 == 'R')         /* restore orig observation line */
+      {                           /* for everything past column 32 */
+      strlcpy_err( obuff + 32, obs->second_line + 81 + 32, 81 - 32);
+      return;
+      }
    memcpy( obuff + 32, buff + 24, 12);      /* RA */
    memcpy( obuff + 44, buff + 38, 13);      /* dec */
-   snprintf( obuff + 57, 24, "%13.2f%c%c%s%s", obs->obs_mag,
+   if( !obs->posn_sigma_theta)
+      {
+      if( obs->posn_sigma_1 > 900000.)    /* means 'no dec supplied;  RA-only observation' */
+         memset( obuff + 44, ' ', 13);
+      if( obs->posn_sigma_2 > 900000.)    /* means 'no RA supplied; dec-only observation' */
+         memset( obuff + 32, ' ', 12);
+      }
+   snprintf_err( obuff + 57, 24, "%13.2f%c%c%s%s", obs->obs_mag,
               obs->mag_band, obs->astrometric_net_code, obs->reference, obs->mpc_code);
    if( obs->obs_mag == BLANK_MAG)        /* no mag given;  clean out that value */
       mag_digits_to_erase = 5;
    else
       mag_digits_to_erase = 2 - obs->mag_precision;
    memset( obuff + 70 - mag_digits_to_erase, ' ', mag_digits_to_erase);
-   memcpy( obuff + 56, obs->columns_57_to_65, 9);
-   if( sigmas_in_columns_57_to_65 &&
-               !memcmp( obuff + 56, "         ", 9))
+   if( sigmas_in_columns_57_to_65)
       {
+      memset( obuff + 56, ' ', 9);
       if( obs->posn_sigma_1 == obs->posn_sigma_2)
          put_sigma( obuff + 59, obs->posn_sigma_1);
       else
@@ -4302,8 +4512,16 @@ void recreate_observation_line( char *obuff, const OBSERVE FAR *obs,
             }
          put_sigma( obuff + 57, obs->posn_sigma_1 * multiplier);
          put_sigma( obuff + 61, obs->posn_sigma_2 * multiplier);
+         if( !obs->posn_sigma_theta)
+            {
+            memcpy( buff, obuff + 57, 3);
+            memcpy( obuff + 57, obuff + 61, 3);
+            memcpy( obuff + 61, buff, 3);
+            }
          }
       }
+   else
+      memcpy( obuff + 56, obs->columns_57_to_65, 9);
    if( !obs->is_included)
       obuff[64] = 'x';
    if( obs->flags & OBS_DONT_USE)
@@ -4321,7 +4539,7 @@ void recreate_second_observation_line( char *buff, const OBSERVE FAR *obs)
       vect[i] = obs->obs_posn[j] - ?; (gotta get earths loc somewhere...)
    ecliptic_to_equatorial( vect);
    for( i = 0; i < 3; i++)
-      snprintf( buff + 33 + i * 12, 13, "%12.8f", vect[i]);
+      snprintf_err( buff + 33 + i * 12, 13, "%12.8f", vect[i]);
    buff[69] = ' ';
 }
 #endif
@@ -4347,7 +4565,7 @@ char *get_file_name( char *filename, const char *template_file_name)
       if( count > 5)
          count = 5;
       memcpy( filename, template_file_name, count);
-      snprintf( filename + count, 30, "%d%s", process_count, tptr);
+      snprintf_err( filename + count, 30, "%d%s", process_count, tptr);
       }
    return( filename);
 }
@@ -4369,7 +4587,7 @@ void create_obs_file( const OBSERVE FAR *obs, int n_obs, const int append,
       {
       char obuff[81];
 
-      snprintf( obuff, sizeof( obuff), "COM Posn sigma %g", obs->posn_sigma_1);
+      snprintf_err( obuff, sizeof( obuff), "COM Posn sigma %g", obs->posn_sigma_1);
       if( obs->posn_sigma_2 != obs->posn_sigma_1)  /* elliptical sigma */
          {
          snprintf_append( obuff, sizeof( obuff), " %g", obs->posn_sigma_2);
@@ -4424,6 +4642,10 @@ static void add_final_period( char *buff)
       strcat( buff, ".");
 }
 
+#define NAME_LIST_SIZE 300
+   /* size after adding 'Observers',  'Measurers',  &c */
+#define PADDED_NAME_LIST_SIZE 320
+
 static void tack_on_names( char *list, const char *names)
 {
    while( *names)
@@ -4439,7 +4661,7 @@ static void tack_on_names( char *list, const char *names)
             if( !memcmp( list + i, names, len))
                if( list[i + len] == ',' || !list[i + len])
                   already_in_list = 1;
-      if( !already_in_list)
+      if( !already_in_list && strlen( list) + len + 3 < NAME_LIST_SIZE)
          {
          char *lptr;
 
@@ -4508,7 +4730,7 @@ static int get_observer_details( const char *observation_filename,
       const char *mpc_code, const char *prog_codes,
       char *observers, char *measurers, char *scope)
 {
-   FILE *ifile = fopen_ext( observation_filename, "fclrb");
+   FILE *ifile = fopen_ext( observation_filename, "fcrb");
    char buff[700];
    const bool getting_observers = (*observers == '\0');
    const bool getting_measurers = (*measurers == '\0');
@@ -4528,8 +4750,10 @@ static int get_observer_details( const char *observation_filename,
 
                assert( tptr);
                *tptr = '\0';
-               jd_start = get_time_from_string( 0., buff + 10, 0, NULL);
-               jd_end = get_time_from_string( 0., tptr + 1, 0, NULL);
+               jd_start = get_time_from_string( 0., buff + 10,
+                           CALENDAR_JULIAN_GREGORIAN, NULL);
+               jd_end = get_time_from_string( 0., tptr + 1,
+                           CALENDAR_JULIAN_GREGORIAN, NULL);
                assert( jd_start > 2000000. && jd_start < 3000000.);
                assert( jd_end > 2000000. && jd_end < 3000000.);
                use_lines = got_obs_in_range( obs, n_obs, jd_start, jd_end);
@@ -4539,7 +4763,7 @@ static int get_observer_details( const char *observation_filename,
             if( use_lines && !memcmp( buff, "MEA ", 4) && getting_measurers)
                tack_on_names( measurers, buff + 4);
             if( use_lines && !memcmp( buff, "TEL ", 4) && getting_scopes)
-               strcat( scope, buff + 4);
+               strlcpy_err( scope, buff + 4, NAME_LIST_SIZE);
             if( !memcmp( buff, "COD ", 4))
                if( !get_details_from_here( buff, mpc_code, prog_codes))
                   new_code_found = true;
@@ -4577,14 +4801,16 @@ static void get_observer_details_from_obs( const OBSERVE *obs,
 
 static void observer_link_substitutions( char *buff)
 {
-   FILE *ifile = fopen_ext( "observer.txt", "fcrb");
+   FILE *ifile = fopen_ext( "observer.htm", "crb");
 
+   if( !ifile)
+      ifile = fopen_ext( "observer.txt", "fcrb");
    if( ifile)
       {
       char line[200], *loc;
 
       while( fgets_trimmed( line, sizeof( line), ifile))
-         if( *line != ';' && *line != '#')
+         if( *line == ' ')
             {
             line[REPLACEMENT_COLUMN - 1] = '\0';
             remove_trailing_cr_lf( line);
@@ -4606,51 +4832,57 @@ static void observer_link_substitutions( char *buff)
       }
 }
 
-static unsigned get_list_of_stations( const unsigned n_obs,
-               const OBSERVE FAR *obs_data, const unsigned max_n_stations,
-               char stations[][5])
-{
-   unsigned n_stations = 0, i, j;
+#define is_power_of_two( X)   (!((X) & ((X) - 1)))
 
-   for( i = 0; i < n_obs; i++)
+static char *get_list_of_stations( const unsigned n_obs,
+               const OBSERVE FAR *obs_data, unsigned *n_stations)
+{
+   char *rval = (char *)malloc( 6);
+
+   *n_stations = 0;
+   for( unsigned i = 0; i < n_obs; i++)
       {
       int compare = 1;
+      unsigned j = 0;
 
-      j = 0;
-      while( j < n_stations &&
-             (compare = strcmp( obs_data[i].mpc_code, stations[j])) > 0)
+      while( j < *n_stations &&
+            (compare = strcmp( obs_data[i].mpc_code, rval + j * 6)) > 0)
          j++;
       if( compare)         /* got a new one */
          {
+         char *tptr;
+
          assert( strlen( obs_data[i].mpc_code) == 3);
-         memmove( stations + j + 1, stations + j, (n_stations - j)  * sizeof( stations[0]));
-         strlcpy( stations[j], obs_data[i].mpc_code, 4);
-         n_stations++;
-         assert( n_stations < max_n_stations);
+         if( is_power_of_two( *n_stations))
+            rval = (char *)realloc( rval, (2 * *n_stations + 1) * 6);
+         tptr = rval + j * 6;
+         memmove( tptr + 6, tptr, (*n_stations - j) * 6);
+         strlcpy( tptr, obs_data[i].mpc_code, 4);
+         (*n_stations)++;
          }
       }
-   return( n_stations);
+   return( rval);
 }
 
 static int write_observer_data_to_file( FILE *ofile, const char *ast_filename,
                  const int n_obs, const OBSERVE FAR *obs_data)
 {
-   unsigned n_stations = 0, i, j;
-   char stations[400][5];
+   unsigned n_stations, i, j;
+   char *stations;
 
    INTENTIONALLY_UNUSED_PARAMETER( ast_filename);
-   n_stations = get_list_of_stations( n_obs, obs_data, 400, stations);
+   stations = get_list_of_stations( n_obs, obs_data, &n_stations);
    for( i = 0; i < n_stations; i++)
       {
       char buff[200], tbuff[100];
-      char details[4][310];
+      char details[4][PADDED_NAME_LIST_SIZE];
       char program_codes[30];
       size_t loc, n_program_codes = 0;
       const char *allowable_codes = "0123456789!\"#$%&'()*+,-./[\\]^_`{|}~";
 
       *program_codes = '\0';
       for( j = 0; j < (unsigned)n_obs; j++)
-         if( !strcmp( stations[i], obs_data[j].mpc_code)
+         if( !strcmp( stations + i * 6, obs_data[j].mpc_code)
                && strchr( allowable_codes, obs_data[j].note1)
                && !strchr( program_codes, obs_data[j].note1))
              {
@@ -4658,7 +4890,7 @@ static int write_observer_data_to_file( FILE *ofile, const char *ast_filename,
              program_codes[n_program_codes] = '\0';
              }
 
-      strlcpy_error( tbuff, stations[i]);
+      strlcpy_error( tbuff, stations + i * 6);
       put_observer_data_in_text( tbuff, buff);
       snprintf_err( details[0], sizeof( details[0]), "(%s) %s.", tbuff, buff);
 
@@ -4670,7 +4902,7 @@ static int write_observer_data_to_file( FILE *ofile, const char *ast_filename,
             const char *filenames[3] = { "progcode.txt", "details.txt", "scopes.txt" };
 
             get_observer_details( filenames[j], obs_data,
-                      n_obs, stations[i], program_codes, details[1], details[2], details[3]);
+                      n_obs, stations + i * 6, program_codes, details[1], details[2], details[3]);
             }
       for( j = 1; j <= 3; j++)
          add_final_period( details[j]);
@@ -4723,6 +4955,7 @@ static int write_observer_data_to_file( FILE *ofile, const char *ast_filename,
             }
       fprintf( ofile, "\n");
       }
+   free( stations);
    return( 0);
 }
 
@@ -4739,16 +4972,28 @@ int write_residuals_to_file( const char *filename, const char *ast_filename,
       {
       char buff[200];
       int number_lines = (n_obs + 2) / 3;
-      int i;
+      int i, line_to_show;
 
+      if( resid_format & RESIDUAL_FORMAT_NORMALIZED)
+         line_to_show = 2105;
+      else if( resid_format & RESIDUAL_FORMAT_TIME_RESIDS)
+         line_to_show = 2104;
+      else
+         line_to_show = 2103;
+
+      fprintf( ofile, "%s\n", get_find_orb_text( line_to_show));
       if( (resid_format & 3) == RESIDUAL_FORMAT_SHORT)
          for( i = 0; i < number_lines * 3; i++)
             {
             int num = (i % 3) * number_lines + i / 3;
-            OBSERVE FAR *obs = ((OBSERVE FAR *)obs_data) + num;
+            const OBSERVE FAR *obs = obs_data + num;
 
             if( num < n_obs)
+               {
                format_observation( obs, buff, resid_format);
+               if( obs->reference[0] == '!' && obs->reference[1] == '!')
+                  memcpy( buff, "------ --- ----- -----", 22);
+               }
             else
                *buff = '\0';
             fprintf( ofile, "%s%s", buff, (i % 3 == 2) ? "\n" : "   ");
@@ -4803,16 +5048,18 @@ void remove_trailing_cr_lf( char *buff)
    buff[i] = '\0';
 }
 
-/* MPC frowns upon redistribution of NEOCP astrometry.  So if an input
-line is from NEOCP,  it's blacked out,  _unless_ it's from a station
-that has given permission for republication.  Those stations are listed
-in the GREENLIT and GREENLIT2 lines in 'environ.dat';  you can add your
-own if desired.
+/* Until late 2023,  MPC frowned upon redistribution of NEOCP astrometry.
+ So if an input line was from NEOCP,  it was blacked out,  _unless_ it
+was from a station that had given permission for republication.
+'is_greenlit()' would determine if an observation could be distributed;
+if not,  the observation would be shown redacted.
 
-In some cases,  only heliocentric observations have gotten the green light.
-Those codes are followed by an asterisk in the GREENLIT/GREENLIT2 lines.
+   Post-2023,  the logic is different.  I sometimes receive data from
+people who say : feel free to distribute ephems based on this,  but we
+aren't ready to make the data public.  (Not often,  but it does happen.)
+Others will say : don't make data on artificial satellites public.
 
-For private use,  you can turn NEOCP redaction off... just be sure that
+For private use,  you can turn redaction off.  Just be sure that
 if you do that,  you don't redistribute anything.        */
 
 bool neocp_redaction_turned_on = true;
@@ -4822,64 +5069,62 @@ static bool is_neocp_line( const char *mpc_line)
    return( strlen( mpc_line) == 80 && !memcmp( mpc_line + 72, "NEOCP", 5));
 }
 
-static bool _is_greenlit( const char *env_line, const char *mpc_line,
+static bool _is_redacted( const char *env_line, const char *mpc_line,
                                                 const bool is_heliocentric)
 {
-   while( NULL != (env_line = strstr( env_line, mpc_line + 77)))
-      {
-      env_line += 3;
-      if( *env_line == ':')      /* specific program code */
+   const char *tptr = env_line;
+
+   while( NULL != (tptr = strstr( tptr, mpc_line + 77)))
+      if( tptr != env_line && tptr[-1] != ' ')
+         tptr += 3;     /* didn't actually find the code */
+      else
          {
-         if( env_line[1] == mpc_line[13])      /* yup,  right program code */
-            if( is_heliocentric || env_line[2] != '*')
-               return( true);
-         }
-      else                 /* anything from this obscode */
-         if( is_heliocentric || *env_line != '*')
+         tptr += 3;
+         if( *tptr == '*' && !is_heliocentric)
+            return( true);   /* only geocentric objects are redacted for this code */
+         if( *tptr <= ' ')      /* anything from this obscode is redacted */
             return( true);
-      }
+         assert( *tptr == ':' || *tptr == '*');
+         tptr++;
+         while( *tptr > ' ')
+            {
+            if( *tptr == mpc_line[13])      /* yup,  right program code */
+               return( true);
+            tptr++;
+            }
+         return( false);      /* didn't find that program code */
+         }
    return( false);
 }
 
 static bool line_must_be_redacted( const char *mpc_line,
                                                 const bool is_heliocentric)
 {
-   if( is_neocp_line( mpc_line) && neocp_redaction_turned_on)
+   if( neocp_redaction_turned_on)
       {
-      const char *to_check[4] = { "GREENLIT", "GREENLIT2", "GREENLIT3", "GREENLIT4" };
       size_t i;
 
-      for( i = 0; i < 4; i++)
-         if( _is_greenlit( get_environment_ptr( to_check[i]), mpc_line, is_heliocentric))
-            return( false);
-      return( true);
+      if( mpc_line[72] == '!')      /* line is marked as 'private communication' */
+         return( true);
+      for( i = 0; i < 10; i++)
+         {
+         char env_buff[10];
+         const char *env_ptr;
+
+         strlcpy_error( env_buff, "REDACTED");
+         if( i)
+            {
+            env_buff[8] = (char)( '1' + i);
+            env_buff[9] = '\0';
+            }
+         env_ptr = get_environment_ptr( env_buff);
+         if( _is_redacted( env_ptr,  mpc_line, is_heliocentric))
+            return( true);
+         if( !*env_ptr)
+            break;
+         }
       }
-   else
-      return( false);
-}
-
-int text_search_and_replace( char FAR *str, const char *oldstr,
-                                     const char *newstr)
-{
-   size_t ilen = FSTRLEN( str), rval = 0;
-   const size_t oldlen = strlen( oldstr);
-   const size_t newlen = strlen( newstr);
-
-   while( ilen >= oldlen)
-      if( !FMEMCMP( str, oldstr, oldlen))
-         {
-         FMEMMOVE( str + newlen, str + oldlen, ilen - oldlen + 1);
-         FMEMCPY( str, newstr, newlen);
-         str += newlen;
-         ilen -= oldlen;
-         rval++;
-         }
-      else
-         {
-         str++;
-         ilen--;
-         }
-   return( (int)rval);
+   return( false);
 }
 
 static long round_off( const double ival, const double prec)
@@ -4953,6 +5198,44 @@ static inline void redacted_locations( const char *terms[],
          y[i] = -9;
 }
 
+/* The following will look through text and add HTML tags for HTTP and
+HTTPS links.  For example,  if the input buffer is
+
+Go to https://example.com/z.htm for details
+
+   the output will be
+
+Go to <a href='https://example.com/z.htm'>https://example.com/z.htm</a> for details
+*/
+
+static void _insert_links( char *buff, size_t buffsize)
+{
+   while( buffsize && *buff)
+      {
+      if( memcmp( buff, "http", 4))
+         {
+         buff++;
+         buffsize--;
+         }
+      else
+         {
+         size_t len = 0, slen = strlen( buff);
+
+         while( len < buffsize && buff[len] >= ' ' && buff[len] != '<')
+            len++;
+         assert( slen + 15 + len < buffsize);
+         memmove( buff + 15 + len, buff, slen + 1);
+         memcpy( buff + len + 11, buff, len);
+         memmove( buff + 9, buff, len);
+         memcpy( buff, "<a href='", 9);
+         memcpy( buff + len + 9, "'>", 2);
+         memcpy( buff + len * 2 + 11, "</A>", 4);
+         buff += 15 + len * 2;
+         buffsize -= 15 + len * 2;
+         }
+      }
+}
+
 char *mpec_error_message = NULL;
 
 void size_from_h_text( const double abs_mag, char *obuff, const int obuff_size)
@@ -5006,11 +5289,12 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
             orbit_is_heliocentric = false;
       }
 
+   residuals_ifile = fopen_ext( get_file_name( buff, residual_filename), "tfcrb");
    if( mpec_no)
-      snprintf( mpec_buff, 4, "_%02x", mpec_no % 256);
+      snprintf_err( mpec_buff, 4, "_%02x", mpec_no % 256);
    else
       *mpec_buff = '\0';
-   snprintf( buff, 12, "%cheader.htm", findorb_language);
+   snprintf_err( buff, 12, "%cheader.htm", findorb_language);
    header_htm_ifile = fopen_ext( buff, "crb");
    if( !header_htm_ifile)
       header_htm_ifile = fopen_ext( buff + 1, "fcrb");
@@ -5021,9 +5305,9 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
 
                   /* Count number of redacted and (current) NEOCP lines : */
    while( fgets_trimmed( buff, sizeof( buff), observations_ifile))
-      if( is_neocp_line( buff))
+      if( memcmp( buff, "COM ", 4))      /* skip comment/'sigma' lines */
          {
-         if( memcmp( buff + 56, "Removed", 7))
+         if( is_neocp_line( buff) && memcmp( buff + 56, "Removed", 7))
             n_neocp_lines++;
          if( line_must_be_redacted( buff, orbit_is_heliocentric))
             n_redacted_lines++;
@@ -5051,6 +5335,7 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
                   strlcpy_error( buff, "<p> <b>");
                   strlcat_error( buff, mpec_error_message);
                   strlcat_error( buff, "</b> </p>");
+                  _insert_links( buff, sizeof( buff));
                   }
                }
             while( (tptr = strchr( buff, '$')) != NULL && found_replacement_text)
@@ -5082,12 +5367,17 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
                         strlcpy_error( replace_str, obj_name);
                         found_replacement_text = true;
                         }
+                     else if( !strcmp( search_str, "$ResTy"))
+                        {
+                        fgets_trimmed( replace_str, sizeof( replace_str), residuals_ifile);
+                        found_replacement_text = true;
+                        }
                      else if( !strcmp( search_str, "$SV"))   /* state vect */
                         {                           /* for Orbit Simulator */
                         extern double helio_ecliptic_j2000_vect[];
                         const int n_output = (helio_ecliptic_j2000_vect[7] == 0.15 ? 8 : 6);
 
-                        snprintf( replace_str, sizeof( replace_str),
+                        snprintf_err( replace_str, sizeof( replace_str),
                                         "%s,%.2f", obj_name,
                                         helio_ecliptic_j2000_vect[8]);
                         text_search_and_replace( replace_str, " ", "%20");
@@ -5141,7 +5431,7 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
 
    if( mpec_no)
       {
-      snprintf( buff, 4, "%u", mpec_no % 255 + 1);
+      snprintf_err( buff, 4, "%u", mpec_no % 255 + 1);
       set_environment_ptr( "MPEC", buff);
       }
 
@@ -5161,19 +5451,26 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
 //          else
                {
                char mpc_code[8];
+               const bool omitted = (buff[72] == '!' && buff[73] == '!');
                const bool redacted = line_must_be_redacted( buff,
                                              orbit_is_heliocentric);
 
-               strlcpy_error( mpc_code, buff + 77);
+               if( omitted)
+                  strcpy( mpc_code, "   ");
+               else
+                  strlcpy_error( mpc_code, buff + 77);
                buff[77] = '\0';
                if( buff[14] != 's' && buff[14] != 'v' && buff[14] != 'r')
                   total_lines++;
-               fprintf( ofile, "<a name=\"o%s%03d\"></a><a href=\"#r%s%03d\">%.12s</a>",
+               if( omitted)
+                  fprintf( ofile, "            ");
+               else
+                  fprintf( ofile, "<a name=\"o%s%03d\"></a><a href=\"#r%s%03d\">%.12s</a>",
                         mpec_buff, total_lines, mpec_buff, total_lines, buff);
                if( redacted)
                   {
                   int i;
-                  const size_t start_of_redacted_text = 25;
+                  const size_t start_of_redacted_text = (omitted ? 12 : 25);
                   const size_t length_of_redacted_text = 77 - start_of_redacted_text;
                   char *tptr = buff + start_of_redacted_text;
 
@@ -5218,7 +5515,6 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
       fclose( observations_ifile);
       }
 
-   residuals_ifile = fopen_ext( get_file_name( buff, residual_filename), "tfcrb");
    if( residuals_ifile)
       {
       FILE *obslinks_file = fopen_ext( "obslinks.htm", "fcrb");
@@ -5279,18 +5575,18 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
 
 /*          if( compare)         */
                {
-               char text_to_find[50], *tptr;
+               char text_to_find[50], *break_ptr;
 
-               snprintf( text_to_find, sizeof( text_to_find),
+               snprintf_err( text_to_find, sizeof( text_to_find),
                                   "></a> %.3s  <", buff + 1);
                url[19] = '\0';
                fseek( obslinks_file, obslinks_header_len, SEEK_SET);
                while( (compare = memcmp( url + 13, text_to_find, 12)) != 0 &&
                                  fgets_trimmed( url, sizeof( url), obslinks_file))
                   ;
-               tptr = strstr( url, "<br>");
-               if( tptr)
-                  *tptr = '\0';
+               break_ptr = strstr( url, "<br>");
+               if( break_ptr)
+                  *break_ptr = '\0';
                url_index = 23;   /* if there is a link,  it starts in byte 23 */
                }
             if( compare)   /* still don't have URL;  try ObsLinks.html */
@@ -5403,10 +5699,10 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
    if( residuals_ifile)
       {
       fseek( residuals_ifile, 0L, SEEK_SET);
-      fprintf( ofile, "<pre><b><a name=\"residuals%s\"></a>"
-                      "<a href=\"%s#resids\">"
-                      "Residuals in arcseconds:</a> </b>\n",
-                           mpec_buff, explanations_url);
+      if( fgets_trimmed( buff, sizeof( buff), residuals_ifile))
+         fprintf( ofile, "<pre><b><a name=\"residuals%s\"></a>"
+                      "<a href=\"%s#resids\">%s:</a> </b>\n",
+                           mpec_buff, explanations_url, buff);
       line_no = 0;
       while( fgets( buff, sizeof( buff), residuals_ifile) && *buff > ' ')
          {
@@ -5466,10 +5762,12 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
                format = "<a class=\"whtext\" style=\"background-color:#%06x;\">";
             else           /* bright color:  normal (black) text  */
                format = "<a style=\"background-color:#%06x;\">";
-            memmove( color + 1, color + 7, strlen( color + 6));  /* remove RGB */
-            memmove( color + 8, color + 4, strlen( color + 9));
+            color[1] = color[7];       /* move the visibility indicator */
+            color[2] = color[8];
+            color[3] = color[9];
             memcpy( color + 4, "</a>", 4);                 /* insert end tag */
-            snprintf( replace, sizeof( replace), format, rgb);
+            memmove( color + 8, color + 10, strlen( color + 9));
+            snprintf_err( replace, sizeof( replace), format, rgb);
             text_search_and_replace( color, "$", replace);
             }
          fputs( buff, ofile);
@@ -5483,4 +5781,3 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name)
    fclose( ofile);
    return( rval);
 }
-

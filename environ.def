@@ -7,11 +7,11 @@
    settings are written to 'environ.dat'.  If you decide at some point that
    you'd like to reset to factory defaults,  just delete 'environ.dat'.
 
-   Windows Find_Orb ignores the following 'CONSOLE_OPTS' line.  For the
-   console flavor of Find_Orb,  this line gives the default MPC code for
-   ephems, which items are shown on-screen, residual display format, and
-   whether all,  some,  or only one MPC code(s) are displayed.
-CONSOLE_OPTS=500 15 3 1
+   The following line gives the default MPC code for ephems;  a zero for
+   a now-obsolete quantity;  and (for interactive Find_Orb) quantities
+   specifying how residuals are displayed and whether all,  some,  or
+   only one MPC code(s) are displayed at the bottom of the screen.
+CONSOLE_OPTS=500 0 3 1
 
    The 'settings' give the comet magnitude type used (defaults to 'N', or
    'nuclear');  the format used for orbital elements;  the precision used
@@ -61,19 +61,14 @@ TIME_RANGE=-1000,3000
    back or into the future.
 OBSERVATION_DATE_RANGE=1100,2300
 
-   MPC has requested that NEOCP data not be redistributed.  So in
-   pseudo-MPECs,  NEOCP observations are "redacted" (blacked out and the
-   data replaced with garbage).  The following observers have kindly given
-   permission for their NEOCP observations to be redistributed in
-   "unredacted" form.  (Contact me if you're willing to be added to this
-   list.)  An asterisk indicates that observations of geocentric objects
-   should remain redacted.
-       In some cases,  a specific program code is greenlit.  'J13:#',  for
-   example,  means that NEOCP observations from (J13) with program code '#'
-   will be shown unredacted.
-GREENLIT=033 291 568 595 691 703 718 970 C95 G58 G96 H01 H41 H43 H45 I41 I52
-GREENLIT2=I81 I93 J69 J95 K80 T05* T08* V03 V06 V11 Y00 Z37 Z48 Z80
-GREENLIT3=851:0 H06:q I22:2 I89:; J13:# U69:| Q62:d
+   Some observers have requested that their observations not be
+   re-distributed.  (Sometimes embargoed until a paper is written,  for
+   example.)  For specific observations,  one can put an exclamation mark
+   (!) in column 73 of the 80-column record. ATLAS would prefer that their
+   observations of artsats (but not of heliocentric objects) not be
+   re-distributed,  so their obscodes are followed by an asterisk.
+   Obscodes without an asterisk would just be redacted in their entirety.
+REDACTED=M22* T05* T08* W22*
 
    We default to assuming that no object will have an observed arc greater
    than 200 years,  and that if it _is_ longer than that,  it's a mistake.
@@ -96,7 +91,7 @@ MAX_OBSERVATION_SPAN=200
       2020 May 22: corrected Arecibo parameters based on
    http://www.naic.edu/~pradar/detect.php . As that page explains,  Hurricane
    Maria downgraded the power level to 350 kW (was 900) and the gain to 7
-   (was 10).  Hope I'll be able to bump those values back up someday soon...
+   (was 10).  Sadly,  it didn't get upgraded.
 RADAR_251=350000,24,7,70.5,1.5e-11
 RADAR_253=430000,17,.94,20,1e-11
    The Parkes radio telescope in Australia lacks an official MPC code.  But it
@@ -173,7 +168,7 @@ BC405_ASTEROIDS=300
    ftp://ssd.jpl.nasa.gov/pub/xfr/gm_Horizons.pck.
 ASTEROID_PERT_LIST=
 
-   By default,  geoocentric elements are referred to the J2000 _equator_.
+   By default,  geocentric elements are referred to the J2000 _equator_.
    Everything else (heliocentric and other non-earth-centric) is referred
    to the J2000 _ecliptic_.  Set the following to be 1 to force all
    elements to be J2000 ecliptic (including geocentric ones),  or 2 to
@@ -201,7 +196,7 @@ GEO_TERMS=6
    which you just integrate the accelerations from all bodies).  I'm still
    experimenting with both methods.  But you will probably be best off leaving
    this value at zero,  meaning Cowell is used.
-ENCKE=1
+ENCKE=
 
    By default,  the DRAG_SHUTOFF=1 tells Find_Orb not to include the effects
    of atmospheric drag.  Set it to zero if you want objects entering the
@@ -224,13 +219,19 @@ AUTO_ARC_LEN=7300
    unit to Earth radii (this assumes the equatorial radius of 6378.140 km.)
    The final value gives the time unit:  1=days (default),  24=hours,
    1440=minutes, 86400=seconds.  For example,  VECTOR_OPTS=1,149597870.7,86400
-   would get you ecliptic vectors in kilometers and km/s.
+   would get you ecliptic J2000 vectors in kilometers and km/s.
       By default,  the vectors will be in the J2000 epoch.  You can add
    (for example) ',2016' to get output in the J2016 epoch,  or ',t' for
    output in true coordinates of date,  or ',m' for mean coordinates of
    date.  So,  for example,  VECTOR_OPTS=0,1,1,1975 would result in
    equatorial J1975 vectors in AU and days.
 VECTOR_OPTS=0,1,1
+
+   By default,  ephems of Cartesian coordinates and state vectors use the
+   TT time scale,  and other ephems use UTC.  Set the following to UTC,
+   and all ephemerides will always be in UTC.  Set it to TT,  and all
+   ephemerides will always be in TT.
+EPHEMERIS_TIMESCALE=
 
    Comet non-gravitational forces in the "standard" Marsden-Sekanina model
    are assumed to be due to sublimating ice.  As described at page 3 of
@@ -265,7 +266,7 @@ IOD_TIMEOUT=20
    rename it.
 # BC405_FILENAME=/home/phred/big/asteroid_ephemeris.txt
 
-   I had a request (https://groups.yahoo.com/neo/groups/find_orb/conversations/messages/35)
+   I had a request (https://projectpluto.com/groups/find_orb/msg33.htm)
    for an option to output planetary state vectors at the epoch of the orbital
    elements to 'elements.txt'.  If you want to do that,  set PLANET_STATES=1.
    By default,  it's blank and planet states are not written out.
@@ -293,10 +294,12 @@ COMBINE_ALL=
    is slowed down/explodes.  Rob Matson tells me that for a 2-3 meter object,
    it should become visible at about 90 km and drop below 3 km/s by the time
    it gets down to 20-25 km.  That's a bit of a range;  let's go with 50 km.
-   (The collision altitude is actually specified in meters,  though.)  Note
-   that the 'collision altitude' for anything except the earth is zero;  that
-   probably should be modified for objects with atmospheres.
+   (The collision altitude is actually specified in meters,  though.)
 COLLISION_ALTITUDE=50000
+
+   The following altitude,  again in meters,  is used for anything except
+   earth.
+COLLISION_ALTITUDE_OFF_EARTH=0
 
    Current available language settings are e (English), f (French), i
    (Italian), d (German), r (Russian), s (Spanish).  More could be added,
@@ -312,7 +315,12 @@ LANGUAGE=e
    RA) or degrees/arcmin (for dec) with zero to eight places after the
    decimal.  Format numbers 200 to 215 are for RA only,  to get decimal
    degrees.  Note that the higher-precision values will be almost
-   meaningless noise.
+   meaningless noise.  Also,  note that the menu for RA/dec formats (shown
+   when you turn RA/dec display on for ephems) is in 'efindorb.txt';  that
+   file has more comments (and allows you to add/remove formats).
+      A full list of formats is provided at
+   https://github.com/Bill-Gray/lunar/blob/mpc_fmt.cpp
+   (search for comments above the get_ra_dec() function.)
 RA_DEC_FORMAT=3,2
 
    By default,  Find_Orb does a decent job of figuring out which objects
@@ -349,11 +357,10 @@ WIN_JSON_SHORT_ELEMENTS=
 WIN_JSON_COMBINED_NAME=
 
    By default,  ecliptic elements are shown in the J2000 frame.  You
-   can set,  for example,  'ELEMENT_EPOCH=B1950 ecliptic' or
-   'ELEMENT_EPOCH=B1767.0 ecliptic' to get those frames.  Set
-   'ELEMENT_EPOCH=ecliptic of date' date to get elements in the epoch
-   of date.
-ELEMENT_EPOCH=J2000 ecliptic
+   can set,  for example,  'ELEMENT_EPOCH=B1950' or 'ELEMENT_EPOCH=B1767.4'
+   to get those frames.  Set 'ELEMENT_EPOCH=ecliptic of date' to get
+   elements in the epoch of date.
+ELEMENT_EPOCH=J2000
 
    Find_Orb can use an Earth Orientation Parameters (EOP) file such
    ftp://ftp.iers.org/products/eop/rapid/standard/finals.all , with
@@ -366,7 +373,7 @@ EOP_FILE=finals.all
    By default,  magnitudes in ephemerides are shown to tenths.  Set
    the following to MAG_DIGITS=2 to get hundredths (almost always
    a meaningless level of precision,  but some people do get good
-   photometry...)
+   photometry),  MAG_DIGITS=3 for thousandths,  etc.
 MAG_DIGITS=1
 
    By default,  sigmas and covariance matrix values in 'covar.txt'
@@ -375,7 +382,8 @@ MAG_DIGITS=1
    to +/- 0.3141592653 AU;  0.31 AU would suffice,  and many would
    argue for 0.3.  In some cases,  though,  you may want/need more
    digits.  Increment FULL_SIGMAS,  and you get an extra digit of
-   precision in both sigmas and in (most) 'covar.txt' values.
+   precision in both sigmas and in (most) 'covar.txt' values.  The
+   value set for FULL_SIGMAS must be at least 2 and no greater than 10.
 FULL_SIGMAS=3
 
    In computing SNRs in ephemerides,  Find_Orb defaults to assuming
@@ -444,15 +452,6 @@ GALACTIC_ADDENDUM=
    "it's really small".  Obviously,  if possible,  supply photometry.
 DEFAULT_V_MAG=
 
-   The entries below tell us that,  for example,  the Earth-Moon L1 point
-   is 84.906572% of the way to the moon from earth,  and so on for L2 and L3,
-   with similar L1/2/3 distances for the Sun-Earth and Sun-Jupiter collinear
-   Lagrange points.  These values can be computed -- see /junk/lagrange.c --
-   but it's simpler just to store these precomputed values.
-LAGRANGE_003010=0.84906572, 1.16783275, -0.99291206
-LAGRANGE_000003=0.98998902, 1.01007824, -0.99999823
-LAGRANGE_000005=0.93331933, 1.06978454, -0.99944357
-
    The 'elements.txt' file created by Find_Orb has some 'comment' data not
    shown by default.  You can toggle to it by clicking on the orbital elements
    shown on-screen,  and some people just look at the 'elements.txt' file
@@ -481,6 +480,53 @@ SIGMAS_FILE=
    is best placed.  This is useful with telescope networks where you might
    well shift the imaging to whichever scope is best placed at a given time.
    Note that these 'MPC codes' also have lines in rovers.txt (q.v.).
+   Las Cumbres Observatory operates two two-meter telescopes,  lumped
+   here as (LC2),  and several one-meter telescopes,  lumped as (LC1).
 GROUP_ATL=M22 T05 T08 W68
 GROUP_LC2=E10 F65
-GROUP_LC1=V37 W85 K91 Q63 Z31 097
+GROUP_LC1=V37 W85 K91 Q63 Z31 097 T04
+
+   By default,  astrometric outliers by three sigmas will be rejected.  That's
+   set by the following variable.  Set it to 9999999 to cause all observations
+   to be included no matter how bad they are.  (Not something I recommend,  but
+   you can do it.)
+OUTLIER_REJECTION_LIMIT=3
+
+   By default,  MOIDs will be shown for eight planets,  if they are low enough
+   to be "interesting".  Set N_MOIDS=14,  and six asteroid MOIDs will also be
+   shown (again,  only if they're low enough).  Don't set it to a higher value.
+   At least at present,  those added six are all we've got.
+N_MOIDS=8
+
+   As a Find_Orb extension,  observations that are not to be distributed are
+   marked with a '!' character in column 73.  If PRIVATE_OBS is left unset and
+   you load up such observations,  Find_Orb will inquire as to whether those
+   observations should be used.  PRIVATE_OBS=0 will skip the question and
+   cause those observations to be included.  PRIVATE_OBS=1 will skip the
+   question and cause those observations to be ignored.
+PRIVATE_OBS=
+
+    By default,  motion units in ephemerides are in arcminutes per hour (or,
+    equivalently,  arcseconds per minute).  One can set the units with the
+    following parameter.  The first character must be ", ', or d.  The
+    second must be /.  The third must be s(econds), m(inutes), h(ours), or
+    d(ays).  Requests for other units (milliradians,  etc.) will be
+    entertained.
+MOTION_UNITS="/min
+
+   By default,  'temporary' files such as ephemerides,  astrometry reformatted
+   to ADES,  debugging files,  orbital elements and ephemerides in text and JSON
+   formats and more are written to the configuration directory ~/.find_orb (Linux)
+   or to the current directory (Windows).  You can specify a directory explicitly
+   with the following parameters,  and 'temporary' files will be put there instead.
+OUTPUT_DIR=
+WIN_OUTPUT_DIR=
+
+   (Humans should never have to edit the following line.)  If Find_Orb
+   encounters an unknown (and possibly newly assigned) observatory code,
+   it will automatically download the latest copy of MPC's ObsCodes.html.  To
+   avoid hammering MPC's servers, it will check the following values,  giving
+   the JD of the last time it downloaded the file and a 'delay' time (by
+   default,  0.1 day = 2.4 hours).  If the previous download was within that
+   delay,  it doesn't make another request.
+UPDATE_OBSCODES_HTML=2460824.384279 0.100000

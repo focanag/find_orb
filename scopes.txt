@@ -1140,13 +1140,24 @@ TEL 10-m Keck I reflector
 COD Ke2
 TEL 10-m Keck II reflector
 
-# Following are some scopes collected at random from MPECs.
+# Following are some scopes collected at random from MPECs or elsewhere.
+
+# Magellan - Clay
+COD 268
+TEL 6.5-m f/11 reflector + CCD
+
+# Magellan - Baade
+COD 269
+TEL 6.5-m f/11 reflector + CCD
 
  COD 688
  TEL 4-m Discovery Channel Telescope
 
 COD G83
 TEL 8.4-m reflector + CCD
+
+COD T11
+TEL 3.8-m Cassegrain reflector
 
 COD Q62
 TEL 0.50-m f/6.8 astrograph + CCD + focal reducer, 0.70-m f/6.6 astrograph + CCD

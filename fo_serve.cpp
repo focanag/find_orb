@@ -49,11 +49,9 @@ int debug_printf( const char *format, ...)                 /* mpc_obs.cpp */
          __attribute__ (( format( printf, 1, 2)))
 #endif
 ;
-int text_search_and_replace( char FAR *str, const char *oldstr,
-                                     const char *newstr);   /* ephem0.cpp */
 int get_defaults( ephem_option_t *ephemeris_output_options, int *element_format,
          int *element_precision, double *max_residual_for_filtering,
-         double *noise_in_arcseconds);                /* elem_out.cpp */
+         double *noise_in_sigmas);                /* elem_out.cpp */
 int make_pseudo_mpec( const char *mpec_filename, const char *obj_name);
                                                /* ephem0.cpp */
 int inquire( const char *prompt, char *buff, const int max_len,
@@ -96,8 +94,9 @@ int inquire( const char *prompt, char *buff, const int max_len,
 }
 
 /* In the (interactive) console Find_Orb,  these allow some functions in
-orb_func.cpp to show info as orbits are being computed.  In this
-non-interactive code,  they're mapped to do nothing. */
+orb_func.cpp to show info as orbits are being computed,  or to let you
+abort processing by hitting a key.  In this non-interactive code,
+they're mapped to do nothing. */
 
 void refresh_console( void)
 {
@@ -109,6 +108,11 @@ void move_add_nstr( const int col, const int row, const char *msg, const int n_b
    INTENTIONALLY_UNUSED_PARAMETER( row);
    INTENTIONALLY_UNUSED_PARAMETER( msg);
    INTENTIONALLY_UNUSED_PARAMETER( n_bytes);
+}
+
+int curses_kbhit_without_mouse( )
+{
+   return( 0);
 }
 
 static void show_problem_message( void)
@@ -162,6 +166,7 @@ int main( const int argc, const char **argv)
    const char *file_names[4] = { "mpec.htm", "combined.json", "elements.json", "ephemeri.json" };
    extern bool neocp_redaction_turned_on;
    int center_object = -2;
+   extern const char *alt_config_directory;
 #ifndef _WIN32
    extern char **environ;
    extern bool findorb_already_running;
@@ -170,6 +175,7 @@ int main( const int argc, const char **argv)
 #endif         /* _WIN32 */
    INTENTIONALLY_UNUSED_PARAMETER( argv);
    INTENTIONALLY_UNUSED_PARAMETER( argc);
+   alt_config_directory = "./";        /* program runs in config directory */
    setvbuf( lock_file, NULL, _IONBF, 0);
    neocp_redaction_turned_on = false;
    fprintf( lock_file, "We're in\n");
@@ -491,6 +497,7 @@ int main( const int argc, const char **argv)
       }
    while( fgets( buff, max_buff_size, ifile))
       printf( "%s", buff);
+   fflush( stdout);
    fclose( ifile);
    if( (i = strlen( mpec_name)) > 8)
       {

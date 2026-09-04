@@ -7,21 +7,21 @@
 
 all: find_orb.exe fo.exe
 
-OBJS=ades_out.obj b32_eph.obj bc405.obj bias.obj collide.obj   \
+OBJS=ades_out.obj bc405.obj bias.obj collide.obj   \
   conv_ele.obj details.obj eigen.obj elem2tle.obj elem_out.obj  \
   elem_ou2.obj ephem0.obj errors.obj expcalc.obj gauss.obj  \
   geo_pot.obj healpix.obj lsquare.obj miscell.obj  \
-  monte0.obj mpc_obs.obj nanosecs.obj \
+  monte0.obj mpc_obs.obj  \
   orb_func.obj orb_fun2.obj pl_cache.obj roots.obj runge.obj \
   shellsor.obj sigma.obj simplex.obj sm_vsop.obj sr.obj stackall.obj
 
 CCLIBS      = user32.lib gdi32.lib advapi32.lib shell32.lib comdlg32.lib
 !ifdef BITS_32
-CFLAGS=-Ot -W3 -nologo -MT -DCONSOLE -I../PDCursesMod
+CFLAGS=-Ot -W3 -nologo -MT -I../PDCursesMod
 ADD_LIBS    = sat_code32.lib jpleph32.lib lunar.lib
 RM=rm
 !else
-CFLAGS=-Ot -W3 -nologo -MT -DCONSOLE -I../PDCursesMod -D_CRT_SECURE_NO_WARNINGS
+CFLAGS=-Ot -W3 -nologo -MT -I../PDCursesMod -D_CRT_SECURE_NO_WARNINGS
 ADD_LIBS    = sat_code64.lib jpleph64.lib lunar64.lib
 RM=del
 !endif
@@ -35,7 +35,7 @@ cssfield.exe: cssfield.cpp
 
 find_orb.exe:               findorb.obj $(OBJS) clipfunc.obj getstrex.obj
      link /out:find_orb.exe findorb.obj $(OBJS) clipfunc.obj getstrex.obj \
-                       pdcurses.lib user32.lib $(CCLIBS) $(ADD_LIBS)
+                       pdcurses.lib user32.lib winmm.lib $(CCLIBS) $(ADD_LIBS)
 
 fo.exe:                     fo.obj $(OBJS)
      link /out:fo.exe       fo.obj $(OBJS) $(ADD_LIBS)
@@ -77,7 +77,6 @@ clean_temp:
    $(RM) elem_short.json
    $(RM) ephemeri.txt
    $(RM) ephemeri.json
-   $(RM) eph_json.txt
    $(RM) gauss.out
    $(RM) guide.txt
    $(RM) linkage.json

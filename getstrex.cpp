@@ -2,7 +2,7 @@
 
 #define PDC_NCMOUSE
 
-#if defined( VT) || defined( XCURSES) || defined( _WIN32)
+#if defined( VT) || defined( XCURSES) || defined( _WIN32) || defined( __WATCOMC__)
    #define PDC_FORCE_UTF8
    #include <curses.h>
 #else
@@ -13,6 +13,8 @@
        #if defined(__has_include)
            #if __has_include( <ncursesw/cursesw.h>)
                #include <ncursesw/cursesw.h>
+           #elif __has_include( <cursesw.h>)
+               #include <cursesw.h>
            #else
                #include <curses.h>
            #endif
@@ -71,6 +73,16 @@ int wget_wch(WINDOW *win, wint_t *wch)
 /* At least for the nonce,  the cursor will be 'normal' in overwrite mode
 and 'very visible' in insert mode.     */
 
+#ifdef __PDCURSESMOD__
+   #define _HAVE_OPAQUE_SCREEN_FUNCS
+#endif
+
+#ifdef NCURSES_VERSION_PATCH
+   #if NCURSES_VERSION_PATCH >= 20230812
+      #define _HAVE_OPAQUE_SCREEN_FUNCS
+   #endif
+#endif
+
 #define CURSOR_INSERT      2
 #define CURSOR_OVERWRITE   1
 
@@ -89,9 +101,9 @@ reposition the cursor using the mouse.
       outside the text area,  that key is returned.  The calling routine
       can then handle that key/click and re-start this function if desired.
 
-   -- Unfortunately,  there's no way to tell if echo,  cbreak,  or nodelay
-      have been called without getting into Curses internals.  So these are
-      only restored in PDCurses.
+   -- Unfortunately,  there's no way to tell if echo() or cbreak() have
+      been called without getting into Curses internals.  So these are only
+      restored in PDCursesMod.
 
    -- Currently in wide-char form only.  That's the only one I actually use.
 
@@ -104,11 +116,11 @@ int wgetn_wstr_ex(WINDOW *win, wint_t *wstr, int *loc, const int maxlen, const i
 {
     int i, x, y, offset = 0, initial_cursor_state;
     int rval = -1;
-#ifdef __PDCURSES__
-    const bool oldcbreak = PDC_getcbreak( ); /* remember states */
-    const bool oldecho = PDC_getecho( );
-    const bool oldnodelay = win->_nodelay;
+#ifdef _HAVE_OPAQUE_SCREEN_FUNCS
+    const int oldcbreak = is_cbreak( ); /* remember states */
+    const int oldecho   = is_echo( );
 #endif
+    const bool oldnodelay = is_nodelay( win);
 
     assert( win);
     assert( wstr);
@@ -290,11 +302,12 @@ int wgetn_wstr_ex(WINDOW *win, wint_t *wstr, int *loc, const int maxlen, const i
                    break;
             }
     }
-#ifdef __PDCURSES__
+#ifdef _HAVE_OPAQUE_SCREEN_FUNCS
     oldcbreak ? cbreak( ) : nocbreak( );     /* restore states */
     oldecho ? echo( ) : noecho( );
-    win->_nodelay = oldnodelay;
 #endif
+    if( oldnodelay)
+       nodelay( win, TRUE);
     curs_set( initial_cursor_state);
     return rval;
 }

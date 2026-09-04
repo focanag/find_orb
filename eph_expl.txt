@@ -64,10 +64,10 @@ midway between the vector from observer to target and the vector
 from sun to target.  This can be useful in analyzing light curves.
 # 34
 
-   The 'galactic confusion' is computed from star counts per unit
-area from Gaia-DR2.  Values range from zero (effectively no
-confusion) to 100 (densest parts of the Milky Way,  Magellanic
-Clouds,  or globular clusters).
+   The 'galactic confusion' is computed from star counts per unit area
+from Gaia-DR2.  Values range from zero (effectively no confusion) to
+100 (densest parts of the Milky Way,  Magellanic Clouds,  or globular
+clusters).  See https://projectpluto.com/gal_conf.htm for details.
 # 30
 
    'PsAng' is applied mostly to comets : it is the position angle at which
@@ -85,9 +85,14 @@ somewhere between this angle and the one specified by 'PsAng',  the
 theoretical angle at which an ionized gas trail would be seen.
 # 32
 
-   'PlAng' is the angle between the observer and the target's orbital plane,
-as measured from the target.  If it is positive,  you are looking at the
-object from above the ecliptic.  This quantity can be useful with comets.
+   'PlAng' is the angle between the observer and the target's heliocentric
+orbital plane, as measured from the target.  If it is positive,  you are
+looking at the object from above the ecliptic.  This quantity can be
+useful with comets.
+
+   JPL's Horizons service calculates this quantity using the barycentric
+orbital plane.  This usually results in small differences,  but they can
+be larger if the perihelion distance is low.
 #  5
 
    Apparent motions are given in arcminutes/hour,  or (equivalently)
@@ -112,6 +117,10 @@ to look farther,  or not nearly as far,  as the uncertainties say.
 
    The object will probably be offset from nominal somewhere along the
 indicated position angle,  especially if the orbit is well determined.
+# 38
+
+   Three-letter constellation abbreviations specify the constellation
+containing that RA/dec,  as defined by the IAU's 1930 delineation.
 
 # Type 1   (state vectors)
 # Type 2   (positions)

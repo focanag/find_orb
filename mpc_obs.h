@@ -26,6 +26,7 @@ OBSERVE
    double posn_sigma_theta;   /* tilt angle of uncertainty ellipse */
    double mag_sigma;
    double time_sigma;         /* in days */
+   double unc_time;           /* uncTime (semi-systematic timing err) in days */
    double computed_mag;
    double ra_bias, dec_bias;     /* in arcseconds */
    char *second_line;
@@ -167,6 +168,7 @@ typedef uint64_t ephem_option_t;
 #define OPTION_EXPOSURE_TIME            EPHEM_OPTION_BIT( 36)
 #define OPTION_EXPLANATIONS             EPHEM_OPTION_BIT( 37)
 #define OPTION_CONSTELLATION            EPHEM_OPTION_BIT( 38)
+#define OPTION_RV_AND_DELTA_SIGMAS      EPHEM_OPTION_BIT( 39)
 
 #define ORBIT_SIGMAS_REQUESTED         1
 #define NO_ORBIT_SIGMAS_REQUESTED    (-1)
@@ -183,12 +185,11 @@ typedef uint64_t ephem_option_t;
    /* Following is used for newer NEODyS/AstDyS data for which */
    /* FCCT14 or VFCC17 over-observing correction has already been */
    /* applied;  we shouldn't 'correct' a second time */
-#define OBS_ALREADY_CORRECTED_FOR_OVEROBSERVING  0x10
-
+#define OBS_ALREADY_CORRECTED_FOR_OVEROBSERVING  0x20
 
    /* Following flag used temporarily within some functions to note, */
    /* e.g.,  that a particular observation has been processed        */
-#define OBS_TEMP_USE_FLAG                        0x20
+#define OBS_TEMP_USE_FLAG                        0x40
 
 extern int object_type;
 
@@ -220,7 +221,7 @@ int get_object_name( char *obuff, const char *packed_desig);
 int get_observer_data( const char FAR *mpc_code, char *buff, mpc_code_t *cinfo);
 void recreate_observation_line( char *obuff, const OBSERVE FAR *obs,
                            const int residual_format);   /* ephem0.cpp */
-void put_observer_data_in_text( const char FAR *mpc_code, char *buff);
+int put_observer_data_in_text( const char FAR *mpc_code, char *buff);
 
 void create_obs_file( const OBSERVE FAR *obs, int n_obs, const int append,
                   const int resid_format);            /* ephem0.cpp */
@@ -276,7 +277,7 @@ int compute_observer_loc( const double jde, const int planet_no,
 int compute_observer_vel( const double jde, const int planet_no,
                const double rho_cos_phi,                    /* mpc_obs.cpp */
                const double rho_sin_phi, const double lon, double FAR *offset);
-int get_findorb_text( char *buff, const int ival);    /* ephem.cpp */
+const char *get_find_orb_text( const int index);    /* elem_out.cpp */
 int write_out_elements_to_file( const double *orbit,
             const double curr_epoch,
             const double epoch_shown,
@@ -384,7 +385,14 @@ void push_orbit( const double epoch, const double *orbit); /* orb_fun2.cpp */
 int pop_orbit( double *epoch, double *orbit);              /* orb_fun2.cpp */
 void pop_all_orbits( void);                                /* orb_fun2.cpp */
 
-int get_sr_orbits( double *orbits, OBSERVE FAR *obs,     /* orb_func.cpp */
+typedef struct
+{
+   double rparam, vparam, orbit[6], score;
+} sr_orbit_t;
+
+int find_nth_sr_orbit( sr_orbit_t *orbit, OBSERVE FAR *obs, int n_obs,
+                            const int orbit_number);         /* orb_func.cpp */
+int get_sr_orbits( sr_orbit_t *orbits, OBSERVE FAR *obs,     /* orb_func.cpp */
                const unsigned n_obs, const unsigned starting_orbit,
                const unsigned max_orbits, const double max_time,
                const double noise_in_sigmas, const int writing_sr_elems);
@@ -477,9 +485,19 @@ Yarkovsky with A2 (both inverse-square and both one added parameter). */
 #define FORCE_MODEL_COMET_THREE_PARAM  0x03
 #define FORCE_MODEL_COMET_FOUR_PARAM   0x04
 
-/* Not used yet : for some rocks,  Yarkovsky can be modelled as an
-A2 (along-orbit) inverse square force.  This is currently handled by
-selecting a two-parameter SRP model and constraining A1=0.   */
+/* If we think there was a delta-v,  due to spacecraft maneuver or impact
+or something else,  it can be described in four parameters : three for
+the amount of the delta-V,  and a fourth saying when it happened.  At
+some point,  there will probably be a model with Yet Another Parameter
+so that we can solve for the circumstances of the delta-V _and_ the
+object's area/mass ratio at the same time.  This 'Delta-V plus SRP'
+model has not yet been implemented.    */
+
+#define FORCE_MODEL_DELTA_V            0x204
+#define FORCE_MODEL_DELTA_V_SRP        0x205
+
+/* For some rocks,  Yarkovsky can be modelled as an A2 (along-orbit)
+inverse square force.  */
 
 #define FORCE_MODEL_YARKO_A2           0x111
 
@@ -488,3 +506,15 @@ extern int force_model;
 bool is_inverse_square_force_model( void);
 
 const char *find_orb_version_jd( double *jd);
+
+      /* In the console version of Find_Orb,  the following two functions */
+      /* get remapped to Curses functions.  In the non-interactive one,   */
+      /* they're mapped to 'do-nothings'.  See fo.cpp & find_orb.cpp.     */
+void refresh_console( void);
+void move_add_nstr( const int col, const int row, const char *msg, const int n_bytes);
+
+#define COLOR_DEFAULT_INQUIRY       12
+#define COLOR_ATTENTION             13
+
+int inquire( const char *prompt, char *buff, const int max_len,
+                     const int color);

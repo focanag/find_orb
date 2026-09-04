@@ -82,7 +82,7 @@ int find_fcct_biases( const double ra, const double dec, const char catalog,
    const double j2000 = 2451545.;      /* JD 2451545.0 = 2000 Jan 1.5 */
    static bool bias_file_known_to_be_missing = false;
 
-   if( catalog == -1)    /* free up internal data */
+   if( catalog == (char)-1)    /* free up internal data */
       {
       if( bias_data)
          free( bias_data);
@@ -201,6 +201,8 @@ int find_fcct_biases( const double ra, const double dec, const char catalog,
          fclose( ofile);
          }
       }
+   if( n_cats == 26 && catalog_codes[25] == 'W')   /* fix a mistaken catalog */
+      catalog_codes[25] = 'Y';                /* code in pre-2023 EFCC files */
    if( !catalog)        /* just inquiring as to which version we have */
       return( n_cats == 26 ? 2018 : 2014);
    catalog_loc = strchr( catalog_codes, catalog);

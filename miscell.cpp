@@ -26,6 +26,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <errno.h>
 #include "stringex.h"
 #include "mpc_func.h"
+#include "mpc_obs.h"
 
 int debug_printf( const char *format, ...)                 /* mpc_obs.cpp */
 #ifdef __GNUC__
@@ -56,15 +57,19 @@ namespace fs = ghc::filesystem;
 
 #endif
 
+/* For Microsoft Windows and MS-DOS,  there is no 'home' directory and
+therefore no ~/.find_orb configuration directory.  The configuration files
+therefore live in the same directory as Find_Orb,  meaning we #define
+CONFIG_IS_LOCAL for such cases.        */
+
 #if defined( _WIN32) || defined( __WATCOMC__)
    #include <direct.h>        /* for _mkdir() definition */
+   #define CONFIG_IS_LOCAL
 #else
    #include <sys/stat.h>
    #include <sys/types.h>
    #include <unistd.h>
 #endif
-
-const char *get_find_orb_text( const int index);
 
 /* This function allows one to put the following options in front of
 the 'permits' string :
@@ -73,36 +78,22 @@ t  File is temporary (doesn't actually have an effect yet).
 f  If the file isn't opened,  a fatal error message is shown.
 c  Configuration file:  look for it in ~/.find_orb (for Linux) or in
    the directory in which Find_Orb is running (Windows).
-l  Try opening locally;  if that fails,  try the config directory.
 
    One can combine these.  For example, 'permits' of tfcw would
 tell the function that the file is a temporary one,  should be
 opened within the configuration directory for writing,  and that
-if it can't be opened, it's a fatal error.  'cl' = try config,
-then local; 'lc' = try local,  then config;  'c' = try config
-only.
+if it can't be opened, it's a fatal error.      */
 
-   I'm still working out the degree to which a separate directory
-for these files will be needed.  In the past,  find_orb,  fo,
-and fo_serve.cgi simply read what they needed from the current
-folder.  At present,  the only case in which use_config_directory
-is 'true' is for console Find_Orb in Linux,  and even there,  you
-can turn it back to 'false'.
-*/
-
-#ifndef _WIN32
-int get_temp_dir( char *name, const size_t max_len);      /* miscell.cpp */
-#endif
 int fetch_astrometry_from_mpc( FILE *ofile, const char *desig);
+int download_a_file( const char *ofilename, const char *url);
 int generic_message_box( const char *message, const char *box_type);
 const char *get_environment_ptr( const char *env_ptr);     /* mpc_obs.cpp */
 FILE *fopen_ext( const char *filename, const char *permits);   /* miscell.cpp */
 char *make_config_dir_name( char *oname, const char *iname);  /* miscell.cpp */
 int reset_astrometry_filename( int *argc, const char **argv);
 uint64_t parse_bit_string( const char *istr);                /* miscell.cpp */
-const char *write_bit_string( char *ibuff, const uint64_t bits);
-
-int use_config_directory = false;
+const char *write_bit_string( char *ibuff, const uint64_t bits,
+                                          const size_t max_bitstring_len);
 const char *alt_config_directory;
 
 #ifndef CONFIG_DIR_AUTOCOPY
@@ -118,15 +109,15 @@ void ensure_config_directory_exists()
 // Going forward it'd be good to reqork Find_Orb to search for data in
 // default directories if local copies don't exist
 #include "prefix.h"
+static char PREFIX_STATIC[500] = PREFIX;
 void ensure_config_directory_exists()
 {
-   if (!use_config_directory)
-      return;
-
    // The c_str() magic in the next line allows conda-build's prefix
    // replacer to work as expected.
    // See https://github.com/conda/conda-build/issues/1674 for details.
-   std::string prefix = std::string(PREFIX).c_str();
+   // Modified on 2023-03-17 to add PREFIX_STATIC as compilers have
+   // gotten too clever & the existing workaround stopped working.
+   std::string prefix = std::string(PREFIX_STATIC).c_str();
 
    if (prefix == "~") {
       // backwards compatibility; do nothing.
@@ -161,84 +152,118 @@ void ensure_config_directory_exists()
 }
 #endif
 
-/* Users may specify files such as ~/this/that.txt on non-Windows boxes.
-The following function replaces ~ with the home directory. */
+void fix_home_dir( char *filename);    /* ephem0.cpp */
 
-static FILE *fopen_tilde( const char *filename, const char *permits)
+/* In Windows or DOS,  the 'default config directory name' will be
+the one in which Find_Orb is running.  (Currently assumed to be the
+default directory,  but it'd be a good idea to check argv[0].)
+
+   On everything else,  it will normally be in ~/.find_orb.  On
+Docker,  it'll be in /software/.find_orb.  On Puppy Linux,  where
+the only user is root,  it'll be in /root/.find_orb.
+
+   To figure out where it is,  we look for the file 'cospar.txt'
+(one of many files in the configuration directory,  and an unusual
+enough name to probably avoid collisions) in these three places.  If
+they all fail,  but an 'alt config directory' is specified,  we try
+that.  After that,  we give up. */
+
+char *default_config_dir_name( char *oname, const char *iname)
 {
-#ifdef _WIN32
-   return( fopen( filename, permits));
+#ifdef CONFIG_IS_LOCAL           /* Microsoft Windows or MS-DOS */
+   if( oname)
+      strcpy( oname, iname);
 #else
-   if( *filename != '~' && filename[1] != '/')
-      return( fopen( filename, permits));
-   else
-      {
-      char fullname[255];
+   static char *config_dir = NULL;
 
-      strlcpy_err( fullname, getenv( "HOME"), sizeof( fullname));
-      strlcat_err( fullname, filename + 1, sizeof( fullname));
-      return( fopen( fullname, permits));
-      }
-#endif
-}
-
-char *make_config_dir_name( char *oname, const char *iname)
-{
-#ifndef _WIN32
-   char *home_ptr = getenv( "HOME");
-#endif
-
-   if( alt_config_directory && *alt_config_directory)
+   if( !oname)       /* memory cleanup */
       {
-      strcpy( oname, alt_config_directory);
-      strcat( oname, iname);
-      return( oname);
+      free( config_dir);
+      config_dir = NULL;
+      return( NULL);
       }
-#ifdef _WIN32
-   strcpy( oname, iname);
-#else
-   if( home_ptr)
+
+   if( !config_dir)
       {
-      strcpy( oname, home_ptr);
-      strcat( oname, "/.find_orb/");
+      const char *test_filename = "cospar.txt";
+      FILE *test_ifile = NULL;
+      int pass;
+
+      for( pass = 0; !test_ifile && pass < 4; pass++)
+         {
+         *oname = '\0';
+         if( !pass)
+            strcpy( oname, "~");        /* usual case */
+         else if( pass == 1)
+            strcpy( oname, "/software");     /* Docker uses this */
+         else if( pass == 2)
+            strcpy( oname, "/root");         /* Puppy Linux uses this */
+         else if( pass == 3 && alt_config_directory)
+            strcpy( oname, alt_config_directory);
+         if( *oname)
+            {
+            fix_home_dir( oname);
+            if( pass < 3)
+               strcat( oname, "/.find_orb/");
+            strcat( oname, test_filename);
+            test_ifile = fopen( oname, "rb");
+            }
+         }
+      assert( test_ifile);
+      fclose( test_ifile);
+      oname[strlen( oname) - 10] = '\0';
+      config_dir = strdup( oname);
       }
-   else
-      *oname = '\0';
+   strcpy( oname, config_dir);
    strcat( oname, iname);
 #endif
    return( oname);
 }
 
+char *make_config_dir_name( char *oname, const char *iname)
+{
+
+   if( alt_config_directory && *alt_config_directory)
+      {
+      strcpy( oname, alt_config_directory);
+      strcat( oname, iname);
+      }
+   else
+      default_config_dir_name( oname, iname);
+   return( oname);
+}
+
 const char *output_directory = NULL;
 
-#ifndef _WIN32
 int get_temp_dir( char *name, const size_t max_len)
 {
+#ifdef CONFIG_IS_LOCAL
+   if( output_directory)
+      strlcpy_err( name, output_directory, max_len);
+   else
+      *name = '\0';
+   return( 0);
+#else          /* non-Windows(R) or MS-DOS case : Linux, *BSD,  etc.  */
    static int process_id = 0;
 
    if( output_directory)
+      {
       strlcpy_err( name, output_directory, max_len);
+      fix_home_dir( name);
+      }
    else
       {
       const bool first_time = (process_id == 0);
 
       if( first_time)
-#if defined( _WIN32) || defined( __WATCOMC__)
-         process_id = 1;
-#else
          process_id = getpid( );
-#endif
       snprintf_err( name, max_len, "/tmp/find_orb%d", process_id);
       if( first_time)
-#if defined( _WIN32) || defined( __WATCOMC__)
-         _mkdir( name);
-#else
          mkdir( name, 0777);
-#endif
       }
    return( process_id);
-}
 #endif
+}
 
 /* We use a lock file to determine if Find_Orb is already running,  and
 therefore putting some temporary files (ephemerides,  elements,  etc.)
@@ -253,63 +278,71 @@ FILE *fopen_ext( const char *filename, const char *permits)
 {
    FILE *rval = NULL;
    bool is_fatal = false;
-   bool try_local = true;
    bool is_temporary = false;
+   bool is_config = false;
 
-   if( *permits == 't')
+   if( strchr( permits, 'l'))
       {
-#if !defined( _WIN32) && !defined( __WATCOMC__)
-      extern bool findorb_already_running;
+      debug_printf( "fopen_ext( '%s', '%s') error\n", filename, permits);
+      assert( 0);
+      }
 
-      is_temporary = findorb_already_running || (output_directory != NULL);
-#endif
-      permits++;
-      }
-   if( *permits == 'f')
+   while( *permits != 'r' && *permits != 'w' && *permits != 'a')
       {
-      is_fatal = true;
-      permits++;
+      const char c = *permits++;
+
+      if( c == 'f')
+         is_fatal = true;
+      else if( c == 'c')
+         is_config = true;
+      else if( c == 't')
+         is_temporary = true;
+      else
+         {
+         fprintf( stderr, "File '%s'\n", filename);
+         assert( 0);
+         }
       }
-   if( !use_config_directory || is_temporary)
-      while( *permits == 'l' || *permits == 'c')
-         permits++;
-   if( *permits == 'c' && strchr( filename, '/'))
-      permits++;              /* not really in the config directory */
-   if( permits[0] == 'l' && permits[1] == 'c')
-      {     /* try local,  then config version */
-      try_local = false;
-      permits++;
-      rval = fopen_tilde( filename, permits + 1);
-      }
-#ifndef _WIN32
+
+   if( strchr( filename, '/'))
+      is_temporary = is_config = false;    /* filename has an explicit path */
+
    if( is_temporary)
       {
       char tname[255];
 
       get_temp_dir( tname, sizeof( tname));
-      snprintf_append( tname, sizeof( tname), "/%s",  filename);
-      rval = fopen( tname, permits);
+      if( *tname)
+         {
+         snprintf_append( tname, sizeof( tname), "/%s",  filename);
+         rval = fopen( tname, permits);
+         }
       }
-#endif
-   if( !rval && *permits == 'c' && !is_temporary)
-      {
-      char tname[255];
 
-      make_config_dir_name( tname, filename);
-      permits++;
-      if( *permits == 'l')       /* permits are 'cl' = check both */
-         permits++;
-      else                       /* check config version only */
-         try_local = false;
-      rval = fopen_tilde( tname, permits);
-      }
-   if( try_local && !rval && !is_temporary)
-      rval = fopen_tilde( filename, permits);
+   if( !rval)
+      if( is_temporary || is_config)
+         {
+         char tname[255];
+
+         if( alt_config_directory && *alt_config_directory)
+            {
+            strcpy( tname, alt_config_directory);
+            strcat( tname, filename);
+            rval = fopen( tname, permits);
+            }
+         if( !rval)    /* alt config directory didn't work */
+            {
+            default_config_dir_name( tname, filename);
+            rval = fopen( tname, permits);
+            }
+         }
+   if( !is_temporary && !is_config)
+      rval = fopen( filename, permits);
    if( !rval && is_fatal)
       {
       char buff[300];
 
-      sprintf( buff, "Error opening %s: %s",
+      snprintf( buff, sizeof( buff), "Error opening %s: %s",
                  filename, strerror( errno));
       generic_message_box( buff, "o");
       exit( -1);
@@ -395,9 +428,11 @@ files to provide NEOCP astrometry nor 'grab_mpc',  which will cause
 this code to always return 0 (i.e.,  no astrometry fetched.)
 */
 
+#define ERR_CODE_NO_DATA_AVAILABLE  (int)0xd100
+
 int fetch_astrometry_from_mpc( FILE *ofile, const char *desig)
 {
-   char tbuff[100];
+   char tbuff[300];
    int bytes_written = 0, pass;
    const char *grab_program = get_environment_ptr( "MPC_GRAB_PROGRAM");
 
@@ -445,14 +480,37 @@ int fetch_astrometry_from_mpc( FILE *ofile, const char *desig)
             bytes_written += (int)fwrite( tbuff, 1, strlen( tbuff), ofile);
          fclose( ifile);
          }
+      else if( err_code == ERR_CODE_NO_DATA_AVAILABLE)
+         {
+         snprintf_err( tbuff, sizeof( tbuff), get_find_orb_text( 2080), desig);
+         generic_message_box( tbuff, "o");
+         }
       else
          {
+         debug_printf( "Command '%s' failed\n", tbuff);
          debug_printf( "grab_mpc error code %d (%x) %s\n", err_code, err_code,
                      strerror( err_code));
          generic_message_box( get_find_orb_text( 2058), "o");
          }
       }
    return( bytes_written);
+}
+
+int download_a_file( const char *ofilename, const char *url)
+{
+   const char *grab_program = get_environment_ptr( "MPC_GRAB_PROGRAM");
+   char *tbuff;
+   size_t buffsize;
+   int err_code;
+
+   if( !*grab_program)
+      grab_program = "grab_mpc";
+   buffsize = strlen( grab_program) + strlen( ofilename) + strlen( url) + 4;
+   tbuff = (char *)malloc( buffsize);
+   snprintf_err( tbuff, (int)buffsize, "%s %s %s", grab_program, ofilename, url);
+   err_code = system( tbuff);
+   free( tbuff);
+   return( err_code);
 }
 
 /* Code to write a single valid,  but completely meaningless observation
@@ -522,7 +580,7 @@ int reset_astrometry_filename( int *argc, const char **argv)
          }
       if( argv[1][1] == 'f')
          {
-         FILE *ofile = fopen_ext( temp_obs_filename, "fwb");
+         FILE *ofile = fopen( temp_obs_filename, "wb");
 
          assert( ofile);
          fetch_astrometry_from_mpc( ofile, obj_name);
@@ -596,10 +654,9 @@ length is 122 bytes :
    but I lack a formal proof of this.  I'm sure 256 bytes will be more
 than enough.   */
 
-const char *write_bit_string( char *ibuff, const uint64_t bits)
+const char *write_bit_string( char *ibuff, const uint64_t bits, const size_t max_bitstring_len)
 {
    int i, j;
-   const size_t max_bitstring_len = 256;
 
    *ibuff = '\0';
    for( i = 0; i < 64; i++)
@@ -619,9 +676,29 @@ const char *write_bit_string( char *ibuff, const uint64_t bits)
    return( ibuff);
 }
 
+/* Very simple pattern matcher,  using ? and * only */
+
+int pattern_match(const char* pattern, const char* string)
+{
+   while( pattern[0])
+      if( pattern[0] == '*')
+            return pattern_match(pattern+1, string)
+                     || (string[0] && pattern_match(pattern, string+1));
+      else
+         {
+         if( pattern[0] == '?' && !string[0])
+            return 0;
+         if( pattern[0] != '?' && pattern[0] != string[0])
+            return 0;
+         pattern++;
+         string++;
+         }
+   return !string[0];
+}
+
 const char *find_orb_version_jd( double *jd)
 {
     if( jd)
-      *jd = 2459898.5;
-    return( "2022 Nov 15");
+      *jd = 2461281.5;
+    return( "2026 Aug 29");
 }

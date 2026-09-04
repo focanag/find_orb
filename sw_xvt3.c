@@ -23,56 +23,16 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <assert.h>
 #include <ctype.h>
 
-/* Code to convert "current format" Spacewatch pointing logs into the
-form expected by 'cssfield.c'.   Note comments at bottom of this file
-on the format of that log. Also see 'cssfield.c' for comments on the
-format of the output from this program.  Compile with
+/* Code to convert Spacewatch pointing logs from 2018 May 17 to the
+present,  from a file sent 2023 July 21 by Cassandry Joly as
 
-gcc -Wall -O3 -o sw_xvt2 sw_xvt2.c
+cleaned_0_9_meter_2018_2023.txt
 
-   We read lines from the SW log.  If it starts with
+Also see 'cssfield.c' for comments on the
+format of the output from this program;  and see 'sw_xvt.c' and 'sw_xvt2.c'
+for conversions from previous eras.  Compile with
 
-0.9-m Log: yyyy mmm dd UT
-
-   we reset the date (converted to ISO form).  If it's got an RA
-and a dec in it,  we look after those for times of observation,  of
-which there can be up to three.  For each of those times of observation,
-we output a line with the RA and dec in decimal degrees,  the ISO
-formatted observation time,  the MPC code 691,  and 'na' (the filename
-is Not Applicable here.)
-
-   That puts everything in the 'standard' CSV format inhaled by
-'cssfield',  dumping to stdout.
-
-   It assumes the log file is
-
-Spacewatch_0.9m.log.txt
-
-   You can specify a different name on the command line.       */
-
-static void get_iso_date( char *iso_date, const char *buff)
-{
-   char month[6];
-   const char *tptr, *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-   int day, year, m;
-
-   printf( "# %s", buff);
-   if( sscanf( buff, "%d %4s %d", &year, month, &day) != 3)
-      {
-      printf( "Malformed date : '%s'\n", buff);
-      exit( -1);
-      }
-   tptr = strstr( months, month);
-   assert( tptr);
-   m = tptr - months;
-   assert( m % 3 == 0);
-   m = m / 3 + 1;
-   assert( m > 0 && m < 13);
-   assert( year >= 2016 && year < 2050);
-   snprintf( iso_date, 20, "%4d-%02d-%02d", year, m, day);
-}
-
-   /* convert,  say,  '31:41:59' to 31 + 41/60 + 59/3600 */
+gcc -Wall -Wextra -pedantic -Werror -O3 -o sw_xvt3 sw_xvt3.c     */
 
 static double get_base_sixty( const char *buff)
 {
@@ -112,25 +72,31 @@ static void add_half_exposure( char *obuff, const char *itime,
    const double seconds = get_base_sixty( itime) * 3600. + exposure_time / 2.;
    const int millisec = (int)( seconds * 1000. + .5);
 
-   snprintf( obuff, 16, "%02d:%02d:%02d.%03d",
+   assert( millisec >= 0 && millisec < 86400000);
+   snprintf( obuff, 14, "%02d:%02d:%02d.%03d",
                   millisec / 3600000, (millisec / 60000) % 60,  /* HH MM */
                   (millisec / 1000) % 60, millisec % 1000);    /* SS.sss */
 }
 
+#define INTENTIONALLY_UNUSED_PARAMETER( param) (void)(param)
+
 int main( const int argc, const char **argv)
 {
-   const char *filename = (argc == 2 ? argv[1] :
-                     "Spacewatch_0.9m.log.txt");
+   const char *filename = (argc == 1 ? "cleaned_0.9_MR-condensed_2023_cleaned.txt" : argv[1]);
    FILE *ifile = fopen( filename, "rb");
    char buff[200];
-   char iso_date[30];
-   double exposure = 0.;
-   double ra, dec;
-   const double min_exposure = 5.;        /* skip focussing exposures */
+   const char *mpc_code = NULL;
+   double curr_exposure = 0.;
+   const double min_exposure = 0.1;
+             /* accept all exposures,  including very short focussing ones */
 
    assert( ifile);
-   *iso_date = '\0';
-   printf( "# Spacewatch 'new formula' logs,  processed with sw_xvt2.c (q.v.)\n");
+   if( !fgets( buff, sizeof( buff), ifile))
+      {
+      fprintf( stderr, "Didn't read header\n");
+      return( -1);
+      }
+   printf( "# Spacewatch 'latest formula' logs,  processed with sw_xvt3.c (q.v.)\n");
 #ifdef __TIMESTAMP__
    printf( "# Source file date %s\n", __TIMESTAMP__);
 #else
@@ -139,37 +105,57 @@ int main( const int argc, const char **argv)
    printf( "# Input file '%s'\n", filename);
    while( fgets( buff, sizeof( buff), ifile))
       {
-      const char *tptr = strstr( buff, "Exp: ");
+      char *fields[7], time_text[20];
+      int i, n_fields;
 
-      if( !memcmp( buff, "Observer", 8))
-         printf( "# %s", buff);
-      if( !memcmp( buff, "0.9-m Log: ", 11))
-         get_iso_date( iso_date, buff + 11);
-      if( tptr)
-         {
-         exposure = atof( tptr + 5);
-         if( exposure > min_exposure)
-            printf( "# Exposure: %.0f s\n", exposure);
-         tptr = find_base_60( buff);
-         assert( tptr);
-         ra = get_base_sixty( tptr) * 15.;
-         tptr = find_base_60( tptr + 8);
-         assert( tptr);
-         dec = get_base_sixty( tptr);
-         if( tptr[-1] == '-')
-            dec = -dec;
-         }
-      if( !memcmp( buff, "Img ", 4) || !memcmp( buff, "Pass ", 5))
-         if( exposure > min_exposure)
+      for( i = n_fields = 0; buff[i] && n_fields < 6; i++)
+         if( buff[i] == '\t')
             {
-            char time_buff[20];
-
-            tptr = find_base_60( buff);
-            assert( tptr);
-            add_half_exposure( time_buff, tptr, exposure);
-            printf( "%.3f,%.3f,%sT%s,691,na\n", ra, dec,
-                                iso_date, time_buff);
+            buff[i] = '\0';
+            fields[n_fields++] = buff + i + 1;
             }
+         else if( buff[i] < ' ')
+            buff[i] = '\0';         /* remove trailing CR/LF */
+      assert( n_fields == 5);
+      if( !mpc_code)
+         {
+         if( !memcmp( buff, "Mosaic_Recovery_0.9m", 20))
+            mpc_code = "691";
+         else if( !memcmp( buff, "Finger_Lakes_1.8m", 17))
+            mpc_code = "291";
+         else if( !memcmp( buff, "SW_Cassegrain_Camera_2.3m", 24))
+            mpc_code = "V00";
+         if( !mpc_code)
+            {
+            fprintf( stderr, "No MPC code\n%s", buff);
+            return( -1);
+            }
+         }
+      assert( mpc_code);
+      assert( strlen( fields[1]) < 16);      /* if HH:MM:SS.ssssss */
+      strcpy( time_text, fields[1]);
+      if( 8 == strlen( time_text))        /* some times lack milliseconds */
+         strcat( time_text, ".000");
+      if( strlen( time_text) > 11 && time_text[2] == ':'
+                          && time_text[5] == ':' && time_text[8] == '.')
+         {
+         char midtime[20];
+
+         assert( fields[4][0] == '+' || fields[4][0] == '-');
+         if( *fields[2]  && curr_exposure != atof( fields[2]))
+            {
+            curr_exposure = atof( fields[2]);
+            printf( "# Exposure: %.0f s\n", curr_exposure);
+            assert( curr_exposure > min_exposure);
+            }
+         printf( "%.4f,%c%.4f,%sT", get_base_sixty( fields[3]) * 15, fields[4][0],
+                                get_base_sixty( fields[4] + 1), fields[0]);
+         time_text[12] = '\0';   /* truncate to milliseconds */
+         add_half_exposure( midtime, time_text, curr_exposure);
+         printf( "%s,%s,%s\n", midtime, mpc_code, buff);
+         }
+      else
+         printf( "# Malformed '%s', %s", time_text, buff);
       }
    fclose( ifile);
    return( 0);

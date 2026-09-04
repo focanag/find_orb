@@ -19,10 +19,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 
 #define _XOPEN_SOURCE_EXTENDED   1
 #define PDC_NCMOUSE
-#ifndef __WATCOMC__
-   #define PDC_FORCE_UTF8
-#endif
-#define MOUSE_MOVEMENT_EVENTS_ENABLED
+#define PDC_FORCE_UTF8
 
 #ifdef _WIN32
 #include <windows.h>
@@ -76,6 +73,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
    #define MOUSE_WHEEL_SCROLL 0
 #endif
 
+#define CSI "\x1b["
+#define OSC "\x1b]"
+
 #define default_mouse_events (BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED \
                             | BUTTON2_CLICKED | BUTTON2_DOUBLE_CLICKED \
                             | BUTTON3_CLICKED | BUTTON3_DOUBLE_CLICKED \
@@ -112,9 +112,12 @@ int debug_level = 0;
 
 extern unsigned perturbers;
 
-#define AUTO_REPEATING         31002
-#define KEY_ADD_MENU_LINE      31004
-#define KEY_REMOVE_MENU_LINE   31005
+#define AUTO_REPEATING                31002
+#define KEY_ADD_MENU_LINE             31004
+#define KEY_REMOVE_MENU_LINE          31005
+#define KEY_CYCLE_RESID_DISPLAY_UP    31006
+#define KEY_CYCLE_RESID_DISPLAY_DN    31007
+#define KEY_OBSCODE_CLICKED           31008
 
 /* You can cycle between showing only the station data for the currently
 selected observation;  or the "normal" having,  at most,  a third of
@@ -168,8 +171,6 @@ int find_trial_orbit( double *orbit, OBSERVE FAR *obs, int n_obs,
              const double r1, const double angle_param);   /* orb_func.cpp */
 int search_for_trial_orbit( double *orbit, OBSERVE FAR *obs, int n_obs,
               const double r1, double *angle_param);  /* orb_func.cpp */
-int find_nth_sr_orbit( double *orbit, OBSERVE FAR *obs, int n_obs,
-                            const int orbit_number);       /* orb_func.cpp */
 void create_ades_file( const char *filename, const OBSERVE FAR *obs, int n_obs);
 char *fgets_trimmed( char *buff, size_t max_bytes, FILE *ifile);
 int generic_message_box( const char *message, const char *box_type);
@@ -186,20 +187,16 @@ int make_pseudo_mpec( const char *mpec_filename, const char *obj_name);
 int store_defaults( const ephem_option_t ephemeris_output_options,
          const int element_format, const int element_precision,
          const double max_residual_for_filtering,
-         const double noise_in_arcseconds);           /* elem_out.cpp */
+         const double noise_in_sigmas);           /* elem_out.cpp */
 int get_defaults( ephem_option_t *ephemeris_output_options, int *element_format,
          int *element_precision, double *max_residual_for_filtering,
-         double *noise_in_arcseconds);                /* elem_out.cpp */
-int text_search_and_replace( char FAR *str, const char *oldstr,
-                                     const char *newstr);   /* ephem0.cpp */
-int sort_obs_by_date_and_remove_duplicates( OBSERVE *obs, const int n_obs);
-int create_b32_ephemeris( const char *filename, const double epoch,
-                const double *orbit, const int n_steps,         /* b32_eph.c */
-                const double ephem_step, const double jd_start);
-void put_observer_data_in_text( const char FAR *mpc_code, char *buff);
+         double *noise_in_sigmas);                /* elem_out.cpp */
+double utc_from_td( const double jdt, double *delta_t);     /* ephem0.cpp */
+#ifndef _WIN32
 void fix_home_dir( char *filename);                /* ephem0.cpp */
+#endif
 int write_environment_pointers( void);             /* mpc_obs.cpp */
-int add_ephemeris_details( FILE *ofile, const double start_jd,  /* b32_eph.c */
+int add_ephemeris_details( FILE *ofile, const double start_jd,  /* ephem0.c */
                                                const double end_jd);
 void set_distance( OBSERVE FAR *obs, double r);             /* orb_func.c */
 void set_statistical_ranging( const int new_using_sr);      /* elem_out.cpp */
@@ -220,10 +217,8 @@ bool is_topocentric_mpc_code( const char *mpc_code);
 int64_t nanoseconds_since_1970( void);                      /* mpc_obs.c */
 int metropolis_search( OBSERVE *obs, const int n_obs, double *orbit,
                const double epoch, int n_iterations, double scale);
-const char *get_find_orb_text( const int index);
 int set_tholen_style_sigmas( OBSERVE *obs, const char *buff);  /* mpc_obs.c */
 FILE *fopen_ext( const char *filename, const char *permits);   /* miscell.cpp */
-int remove_rgb_code( char *buff);                              /* ephem.cpp */
 int find_vaisala_orbit( double *orbit, const OBSERVE *obs1,   /* orb_func.c */
                      const OBSERVE *obs2, const double solar_r);
 int extended_orbit_fit( double *orbit, OBSERVE *obs, int n_obs,
@@ -236,6 +231,8 @@ int orbital_monte_carlo( const double *orbit, OBSERVE *obs, const int n_obs,
 char *make_config_dir_name( char *oname, const char *iname);    /* miscell.cpp */
 int reset_astrometry_filename( int *argc, const char **argv);
 int set_language( const int language);                      /* elem_out.cpp */
+static void show_splash_screen( void);
+static void show_splash_screen_and_wait( void);
 void shellsort_r( void *base, const size_t n_elements, const size_t esize,
          int (*compare)(const void *, const void *, void *), void *context);
 static int count_wide_chars_in_utf8_string( const char *iptr, const char *endptr);
@@ -245,8 +242,26 @@ void make_observatory_info_text( char *text, const size_t textlen,
              const OBSERVE *obs, int n_obs, const char *mpc_code);
 void size_from_h_text( const double abs_mag, char *obuff,
                                  const int obuff_size);  /* ephem0.c */
+void create_sigma_hover_text( char *buff, const size_t buffsize,
+                     const OBSERVE FAR *obs);            /* ephem0.c */
 int find_fcct_biases( const double ra, const double dec, const char catalog,
                  const double jd, double *bias_ra, double *bias_dec);
+int select_tracklet( OBSERVE *obs, const int n_obs, const int idx);
+int get_orbit_from_mpcorb_sof( const char *object_name, double *orbit,
+             ELEMENTS *elems, const double full_arc_len, double *max_resid);
+int improve_sr_orbits( sr_orbit_t *orbits, OBSERVE FAR *obs,
+               const unsigned n_obs, const unsigned n_orbits,  /* orb_func.c */
+               const double noise_in_sigmas, const int writing_sr_elems);
+int save_ephemeris_settings( const ephem_option_t ephemeris_output_options,
+      const int n_steps, const char *obscode, const char *step_size,
+      const char *ephem_start, const char *config);      /* elem_out.cpp */
+int load_ephemeris_settings( ephem_option_t *ephemeris_output_options,
+      int *n_steps, char *obscode, char *step_size, char *ephem_start,
+      const char *config);                               /* elem_out.cpp */
+void compute_effective_solar_multiplier( const char *constraints);  /* runge.c */
+double find_kreutz_orbit( OBSERVE FAR *obs, int n_obs, double *orbit,
+                  const double q);  /* orb_func.c */
+void reset_sr_orbits( void);                             /* elem_out.cpp */
 
 #ifdef __cplusplus
 extern "C" {
@@ -274,15 +289,15 @@ extern double maximum_jd, minimum_jd;        /* orb_func.cpp */
 #define COLOR_RESIDUAL_LEGEND       9
 #define COLOR_MENU                 10
 #define COLOR_SCROLL_BAR           11
-#define COLOR_DEFAULT_INQUIRY      12
-#define COLOR_ATTENTION            13
+/* #define COLOR_DEFAULT_INQUIRY      12   Defined in 'mpc_obs.h' */
+/* #define COLOR_ATTENTION            13   Defined in 'mpc_obs.h' */
 #define COLOR_MPC_CODES            14
-#define COLOR_HINT_TEXT            18
+/* colors 15, 16, 17, and 18 also used for MPC codes;  see 'command.txt' */
 
 #define SHOW_FILE_IS_EPHEM          1
 #define SHOW_FILE_IS_CALENDAR       2
 
-static int curses_kbhit( )
+int curses_kbhit( )
 {
    int c;
 
@@ -318,6 +333,24 @@ static int extended_getch( void)
    return( rval);
 }
 
+int curses_kbhit_without_mouse( )
+{
+   int rval = curses_kbhit( );
+
+   if( rval != ERR)
+      {
+      extended_getch( );
+      if( rval == KEY_MOUSE)        /* ignoring the mouse */
+         {
+         MEVENT mouse_event;
+
+         getmouse( &mouse_event);
+         rval = ERR;
+         }
+      }
+   return( rval);
+}
+
 static int *store_curr_screen( void)
 {
    const int xsize = getmaxx( stdscr), ysize = getmaxy( stdscr);
@@ -334,40 +367,49 @@ static int *store_curr_screen( void)
    return( rval);
 }
 
-#ifndef __PDCURSES__
 /* Some ncurses platforms are squirrelly about how they handle
 mouse movements.  Console commands have to be issued to turn
-the mouse on or off.  This is still getting some testing,  and
-is commented out by default. */
+the mouse on or off.  */
 
-#ifdef MOUSE_MOVEMENT_EVENTS_ENABLED
-   #define VT_IGNORE_ALL_MOUSE      "\033\133?1003l\n"
-   #define VT_RECEIVE_ALL_MOUSE     "\033\133?1003h\n"
-#endif
+#ifndef __PDCURSES__
+   #define VT_IGNORE_ALL_MOUSE      CSI "?1003l\n"
+   #define VT_RECEIVE_ALL_MOUSE     CSI "?1003h\n"
 #endif
 
-#ifdef __WATCOMC__
-#undef endwin
-extern "C" {
-PDCEX  int     endwin_x64_4302(void);
-}
-#define endwin endwin_x64_4302
-#endif
-
-static int full_endwin( void)
+static void _disable_mouse_movements( void)
 {
 #ifdef VT_IGNORE_ALL_MOUSE
    printf( VT_IGNORE_ALL_MOUSE);
 #endif
+   mousemask( default_mouse_events, NULL);
+}
+
+static void _enable_mouse_movements( void)
+{
+#ifdef VT_RECEIVE_ALL_MOUSE
+   printf( VT_RECEIVE_ALL_MOUSE);
+#endif
+   mousemask( default_mouse_events | REPORT_MOUSE_POSITION, NULL);
+}
+
+#ifdef __WATCOMC__
+#undef endwin
+extern "C" {
+PDCEX  int     endwin_u64_4400(void);
+}
+#define endwin endwin_u64_4400
+#endif
+
+static int full_endwin( void)
+{
+   _disable_mouse_movements( );
    return( endwin( ));
 }
 
 #ifndef _WIN32
 static int restart_curses( void)
 {
-#ifdef VT_RECEIVE_ALL_MOUSE
-   printf( VT_RECEIVE_ALL_MOUSE);
-#endif
+   _enable_mouse_movements( );
    return( refresh( ));
 }
 #endif
@@ -384,13 +426,14 @@ static void restore_screen( const int *screen)
       mvaddchnstr( y, 0, cptr, n_out);
 }
 
-int clipboard_to_file( const char *filename, const int append); /* clipfunc.cpp */
+int clipboard_to_file( const char *filename, const int append,
+                           const bool use_selection); /* clipfunc.cpp */
 int copy_file_to_clipboard( const char *filename);    /* clipfunc.cpp */
 
 static bool curses_running = false;
 
 static const char *help_file_name = NULL;
-static bool mpc_code_select = false;
+static int mpc_code_select = 0;
 
 #define HINT_TEXT -1
 
@@ -408,7 +451,7 @@ static int full_inquire( const char *prompt, char *buff, const int max_len,
 
    while( rval < 0)
       {
-      int i, j, n_lines = 1, line_start = 0, box_size = (buff ? 14 : 0);
+      int i, j, n_lines = 1, box_size = (buff ? 14 : 0);
       const int side_borders = 1;   /* leave a blank on either side */
       int real_width, line = line0, col = col0;
       char tbuff[200];
@@ -416,20 +459,27 @@ static int full_inquire( const char *prompt, char *buff, const int max_len,
       int x, y, z;
       mmask_t button;
 
-      for( i = 0; prompt[i]; i++)
-         if( prompt[i] == '\n' || !prompt[i + 1])
-            {
-            int new_size = count_wide_chars_in_utf8_string(
-                        prompt + line_start, prompt + i);
+      i = 0;
+      while( prompt[i])
+         {
+         int new_size;
 
-            if( help_file_name && !line_start)
-               new_size += 4;       /* ensure room on top line for [?] */
-            if( box_size < new_size)
-               box_size = new_size;
-            line_start = i;
-            if( prompt[i + 1])   /* ignore trailing '\n's */
-               n_lines++;
+         j = i;
+         while( prompt[j] && prompt[j] != '\n')
+            j++;
+         new_size = count_wide_chars_in_utf8_string(
+                        prompt + i, prompt + j);
+         if( help_file_name && !i)
+            new_size += 4;       /* ensure room on top line for [?] */
+         if( box_size < new_size)
+            box_size = new_size;
+         i = j;
+         if( prompt[i])   /* skip trailing '\n's */
+            {
+            n_lines++;
+            i++;
             }
+         }
       if( box_size > getmaxx( stdscr) - 2)
          box_size = getmaxx( stdscr) - 2;
 
@@ -567,12 +617,26 @@ static int full_inquire( const char *prompt, char *buff, const int max_len,
                curr_line = y;
                x -= col;
                y -= line - n_lines;
-               if( mpc_code_select && x > real_width - 3)
-                  x = -1;        /* ignore some of the right margin */
-               if( y >= 0 && y < n_lines && x >= 0 && x < real_width)
+               if( button & BUTTON4_PRESSED)   /* actually 'wheel up' */
+                  rval = KEY_UP;
+               else if( button5_pressed)       /* actually 'wheel down' */
+                  rval = KEY_DOWN;
+               else if( y >= 0 && y < n_lines && x >= 0 && x < real_width)
                   {
                   if( mpc_code_select)
-                     rval = KEY_F( 1 + x / 4 + y * (box_size / 4));
+                     {
+                     int selection;
+
+                     if( x == real_width - 1)
+                        x--;
+                     selection = x / 4 + y * (box_size / 4 + 1);
+                     if( y == n_lines - 1)
+                        rval = 27;
+                     else if( selection < mpc_code_select)
+                        rval = KEY_F( 1 + selection);
+                     else
+                        curr_line = -1;
+                     }
                   else
                      rval = KEY_F( y + 1);
                   }
@@ -588,7 +652,7 @@ static int full_inquire( const char *prompt, char *buff, const int max_len,
                         {
                         const attr_t attr = (pass ? A_REVERSE : A_NORMAL);
 
-                        if( mpc_code_select)
+                        if( mpc_code_select && highlit_line < line - 1)
                            mvchgat( highlit_line, col + highlit_x - highlit_x % 4,
                                                5, attr, color, NULL);
                         else
@@ -629,16 +693,28 @@ static int full_inquire( const char *prompt, char *buff, const int max_len,
 int inquire( const char *prompt, char *buff, const int max_len,
                      const int color)
 {
+   extern char *mpec_error_message;
+
+   assert( prompt);
+   if( !mpec_error_message && color == COLOR_ATTENTION)
+      {
+      const size_t len = strlen( prompt) + 1;
+
+      mpec_error_message = (char *)malloc( len);
+      strlcpy_err( mpec_error_message, prompt, len);
+      }
    return( full_inquire( prompt, buff, max_len, color, -1, -1));
 }
 
 static int select_mpc_code( const OBSERVE *obs, const int n_obs, int curr_obs)
 {
-   char *buff = (char *)malloc( 1000);
+   const int max_n_codes = 500;
+   const int buffsize = max_n_codes * 4 + 70;
+   char *buff = (char *)malloc( buffsize);
    int n_codes = 0, i, nx = 0, c;
 
    *buff = '\0';
-   for( i = 0; i < n_obs; i++)
+   for( i = 0; i < n_obs && n_codes < max_n_codes; i++)
       if( !strstr( buff, obs[i].mpc_code))
          {
          int j = 0;
@@ -653,14 +729,16 @@ static int select_mpc_code( const OBSERVE *obs, const int n_obs, int curr_obs)
          memcpy( tptr, obs[i].mpc_code, 3);
          tptr[3] = ' ';
          n_codes++;
-         if( nx * nx < n_codes)
+         if( nx * nx < n_codes && (nx + 1) * 4 < COLS - 3)
             nx++;
          }
-   for( i = nx; i <= n_codes; i += nx)
+   for( i = nx; i < n_codes; i += nx)
       buff[i * 4 - 1] = '\n';
-   mpc_code_select = true;
+   buff[n_codes * 4 - 1] = '\0';
+   strlcat_err( buff, "\nCancel", buffsize);
+   mpc_code_select = n_codes;
    c = inquire( buff, NULL, 0, COLOR_DEFAULT_INQUIRY);
-   mpc_code_select = false;
+   mpc_code_select = 0;
    c -= KEY_F( 1);
    if( c >= 0 && c < n_codes)
       {
@@ -721,7 +799,7 @@ static double *set_up_alt_orbits( const double *orbit, unsigned *n_orbits)
    switch( available_sigmas)
       {
       case COVARIANCE_AVAILABLE:
-         memcpy( sr_orbits, orbit, MAX_N_PARAMS * sizeof( double));
+         memcpy( sr_orbits, orbit, n_orbit_params * sizeof( double));
          compute_variant_orbit( sr_orbits + n_orbit_params, sr_orbits, 1.);
          *n_orbits = 2;
          break;
@@ -729,7 +807,7 @@ static double *set_up_alt_orbits( const double *orbit, unsigned *n_orbits)
          *n_orbits = n_sr_orbits;
          break;
       default:
-         memcpy( sr_orbits, orbit, MAX_N_PARAMS * sizeof( double));
+         memcpy( sr_orbits, orbit, n_orbit_params * sizeof( double));
          *n_orbits = 1;
          break;
       }
@@ -785,7 +863,7 @@ static void set_ra_dec_format( void)
    buff[len] = '\0';
    help_file_name = "radecfmt.txt";
    c = inquire( buff, NULL, 0, COLOR_DEFAULT_INQUIRY);
-   if( c >= '1' && c < '1' + (int)n_lines)
+   if( c >= '0' && c < '1' + (int)n_lines)
       c += KEY_F( 1) - '1';
    if( c >= KEY_F( 1) && c <= (int)KEY_F( n_lines))
       {
@@ -797,6 +875,51 @@ static void set_ra_dec_format( void)
       memcpy( buff, tptr, tptr2 - tptr);
       buff[tptr2 - tptr] = '\0';
       set_environment_ptr( ra_dec_fmt, buff);
+      }
+}
+
+static void select_angular_motion_units( void)
+{
+   char buff[1000], *tptr = buff, curr_units[4];
+   int c;
+
+   strlcpy( curr_units, get_environment_ptr( "MOTION_UNITS"),
+                     sizeof( curr_units));
+   if( !*curr_units)
+      strlcpy( curr_units, "'/h", sizeof( curr_units));
+   strlcpy_error( buff, get_find_orb_text( 2078));
+   if( (tptr = strstr( buff, curr_units)) != NULL)
+      {                    /* mark currently selected units */
+      while( *tptr != '(')
+         tptr--;
+      tptr[1] = 'o';
+      }
+   c = inquire( buff, NULL, 0, COLOR_DEFAULT_INQUIRY);
+   if( c >= '0' && c < '9')
+      c -= '0';
+   else
+      c -= KEY_F( 1);
+   if( c >= 0)
+      {
+      tptr = buff;
+      while( *tptr && c)
+         {
+         while( *tptr && *tptr != '\n')
+            tptr++;
+         if( *tptr == '\n')
+            tptr++;
+         c--;
+         }
+      if( *tptr)
+         {
+         size_t i = 0;
+
+         tptr += 6;
+         while( tptr[i] > ' ')
+            i++;
+         tptr[i] = '\0';
+         set_environment_ptr( "MOTION_UNITS", tptr);
+         }
       }
 }
 
@@ -816,6 +939,15 @@ static char *_set_radio_button( char *text, const int option_num)
    return( line_ptr);
 }
 
+static void show_calendar( void)
+{
+   FILE *ifile = fopen_ext( "calend.txt", "crb");
+
+   if( ifile)
+      fclose( ifile);
+   show_a_file( (ifile ? "calend.txt" : "calendar.txt"), SHOW_FILE_IS_CALENDAR);
+}
+
 /* Here's a simplified example of the use of the 'ephemeris_in_a_file'
    function... nothing fancy,  but it shows how it's used.  */
 
@@ -832,21 +964,28 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
    char buff[2000];
    double jd_start = 0., jd_end = 0., step = 0.;
    bool show_advanced_options = false;
+   int offset_line = 0;
+   char message_to_user[180];
 
+   *message_to_user = '\0';
    while( c > 0)
       {
       int format_start;
       unsigned i, n_lines;
-      int vect_frame = -1;
+      int vect_frame = -1, planet_idx;
       double vect_dist_units = 0., vect_time_units = 0.;
       const int ephem_type = (int)(ephemeris_output_options & 7);
       bool reset_vect_units = false;
       extern double ephemeris_mag_limit;
       const char *tptr, *err_msg = NULL;
+      char *end_of_location_text;
       char vect_epoch[9];
       const bool is_topocentric =
                is_topocentric_mpc_code( mpc_code);
 
+      put_colored_text( message_to_user, getmaxy( stdscr) - 1, 0, -1,
+                        COLOR_MESSAGE_TO_USER);
+      *message_to_user = '\0';
       jd_start = 0.;
       format_start = extract_date( ephemeris_start, &jd_start);
       step = get_step_size( ephemeris_step_size, NULL, NULL);
@@ -875,8 +1014,9 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
                                         n_ephemeris_steps);
       snprintf_append( buff, sizeof( buff) , "S  Step size: %.60s\n", ephemeris_step_size);
       snprintf_append( buff, sizeof( buff), "L  Location: (%s) ", mpc_code);
-      put_observer_data_in_text( mpc_code, buff + strlen( buff));
+      planet_idx = put_observer_data_in_text( mpc_code, buff + strlen( buff));
       strcat( buff, "\n");
+      end_of_location_text = buff + strlen( buff);
       if( ephem_type == OPTION_STATE_VECTOR_OUTPUT
                    || ephem_type == OPTION_POSITION_OUTPUT)
          {
@@ -946,13 +1086,11 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
                   (ephemeris_output_options & OPTION_RADIAL_VEL_OUTPUT) ? '*' : ' ');
          snprintf_append( buff, sizeof( buff), "P [%c] Phase angle\n",
                   (ephemeris_output_options & OPTION_PHASE_ANGLE_OUTPUT) ? '*' : ' ');
+         snprintf_append( buff, sizeof( buff), "V [%c] Visibility indicator\n",
+               (ephemeris_output_options & OPTION_VISIBILITY) ? '*' : ' ');
          if( is_topocentric)
-            {
-            snprintf_append( buff, sizeof( buff), "V [%c] Visibility indicator\n",
-                  (ephemeris_output_options & OPTION_VISIBILITY) ? '*' : ' ');
             snprintf_append( buff, sizeof( buff), "U [%c] Suppress unobservables\n",
                   (ephemeris_output_options & OPTION_SUPPRESS_UNOBSERVABLE) ? '*' : ' ');
-            }
          snprintf_append( buff, sizeof( buff), "F Suppress when fainter than mag: %.1f\n",
                   ephemeris_mag_limit);
          snprintf_append( buff, sizeof( buff), "D [%c] Positional sigmas\n",
@@ -1009,15 +1147,44 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
                   (ephemeris_output_options & OPTION_EXPOSURE_TIME) ? '*' : ' ');
             snprintf_append( buff, sizeof( buff), "= [%c] Constellation\n",
                   (ephemeris_output_options & OPTION_CONSTELLATION) ? '*' : ' ');
+            snprintf_append( buff, sizeof( buff), "$ [%c] RVel, delta sigmas\n",
+                  (ephemeris_output_options & OPTION_RV_AND_DELTA_SIGMAS) ? '*' : ' ');
             }
          }
       for( i = n_lines = 0; buff[i]; i++)
          if( buff[i] == '\n')
-            {
             n_lines++;
-            if( n_lines + 4 == (unsigned)LINES)
-               buff[i + 1] = '\0';
+      if( n_lines > (unsigned)LINES - 3)
+         {
+         char *tptr1, *tptr = end_of_location_text;
+
+         if( offset_line < 0)
+            offset_line = 0;
+         if( offset_line > (int)n_lines - (LINES - 4))
+            offset_line = (int)n_lines - ( LINES - 4);
+
+         for( i = 0; i < (unsigned)offset_line; i++)
+            {
+            tptr = strchr( tptr, '\n');
+            assert( tptr);
+            tptr++;
             }
+         tptr1 = tptr;
+         for( i = 0; i < (unsigned)( LINES - 10); i++)
+            {
+            tptr1 = strchr( tptr1, '\n');
+            if( !tptr1)
+               fprintf( stderr, "\ni %u offset_line %u n_lines %u LINES %d\n",
+                           i, offset_line, n_lines, LINES);
+            assert( tptr1);
+            tptr1++;
+            if( !*tptr1)
+               break;
+            }
+         *tptr1 = '\0';
+         memmove( end_of_location_text, tptr, tptr1 - tptr + 1);
+         strlcat_error( buff, "Up/down arrows or mouse wheel for other options\n");
+         }
       tptr = get_find_orb_text( 2064);
       i = ephem_type;
       while( i && *tptr)
@@ -1035,7 +1202,7 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
          tptr = (char *)"Unknown";
          i = 7;
          }
-      snprintf_append( buff, sizeof( buff), "C  %.*s\n", i, tptr);
+      snprintf_append( buff, sizeof( buff), "C  Ephemeris type : %.*s\n", i, tptr);
       snprintf_append( buff, sizeof( buff), "M  Make ephemeris\n");
       snprintf_append( buff, sizeof( buff), "Q  Return to main display");
       n_lines += 4;
@@ -1052,12 +1219,41 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
          for( i = 0; buff[i] && n; i++)
             if( buff[i] == '\n')
                n--;
-         c = buff[i];
+         c = tolower( buff[i]);
          }
       if( c >= ALT_0 && c <= ALT_7)
          {
          ephemeris_output_options &= ~7;
          ephemeris_output_options |= (c - ALT_0);
+         }
+      else if( c == ALT_A)
+         {                    /* loading configuration */
+         c = inquire( "Hit letter of configuration to load",
+                         NULL, 30, COLOR_MESSAGE_TO_USER);
+         if( c >= 'a' && c <= 'z')
+            {
+            char tstr[2];
+            int err_code;
+
+            tstr[0] = (char)( c + 'A' - 'a');
+            tstr[1] = '\0';
+            snprintf( buff, sizeof( buff), "STORED_EPHEM_%c", c);
+            err_code = load_ephemeris_settings( &ephemeris_output_options, &n_ephemeris_steps,
+                           mpc_code, ephemeris_step_size, ephemeris_start, tstr);
+            snprintf( message_to_user, sizeof( message_to_user),
+                  (err_code ? "Preset %c not found" : "Preset %c loaded"), c);
+            }
+         }
+      else if( c >= CTRL( 'A') && c <= CTRL( 'Z'))
+         {                    /* saving configuration */
+         char tstr[2];
+
+         tstr[0] = (char)( c + 'A' - CTRL( 'A'));
+         tstr[1] = '\0';
+         save_ephemeris_settings( ephemeris_output_options, n_ephemeris_steps,
+                        mpc_code, ephemeris_step_size, ephemeris_start, tstr);
+         snprintf( message_to_user, sizeof( message_to_user),
+                  "Preset %c set to current ephemeris options", c);
          }
       else switch( c)
          {
@@ -1108,7 +1304,7 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
          case 'b': case 'B':
             ephemeris_output_options ^= OPTION_PHASE_ANGLE_BISECTOR;
             break;
-         case 'c': case 'C':
+         case 'c':
             {
             strlcpy_error( buff, get_find_orb_text( 2064));
             _set_radio_button( buff, ephem_type);
@@ -1124,6 +1320,9 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
                ephemeris_output_options |= i;
                }
             }
+            break;
+         case 'C':
+            show_calendar( );
             break;
          case 'd': case 'D':
             if( vect_frame  > -1)
@@ -1197,12 +1396,20 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
                {
                if( strlen( buff) < 3)
                   err_msg = "MPC codes must be at least three characters long";
-               else if( strlen( buff) < 50 || !memcmp( buff, "Ast", 3))
+               else if( strlen( buff) < 5 || !memcmp( buff, "Ast", 3)
+                           || !get_lat_lon_info( NULL, buff))
                   strlcpy_error( mpc_code, buff);
-               else if( !get_observer_data( buff, buff, NULL))
+               else if( strlen( buff) > 4)
                   {
-                  buff[3] = '\0';
-                  strlcpy_error( mpc_code, buff);
+                  if( !get_observer_data( buff, buff, NULL))
+                     {
+                     buff[4] = '\0';
+                     if( buff[3] == ' ')
+                        buff[3] = '\0';
+                     strlcpy_error( mpc_code, buff);
+                     }
+                  else
+                     err_msg = "Didn't understand that observatory code";
                   }
                }
             break;
@@ -1234,6 +1441,8 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
                err_msg = "You need to set the number of ephemeris steps!";
             else if( !step && *ephemeris_step_size != 'a')
                err_msg = "You need to set a valid step size!";
+            else if( planet_idx == -1)
+               err_msg = "You need to set a valid observer location!";
             else                 /* yes,  we can make an ephemeris */
                c = -2;
             }
@@ -1245,6 +1454,8 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
             break;
          case 'o': case 'O':
             ephemeris_output_options ^= OPTION_SEPARATE_MOTIONS;
+            if( ephemeris_output_options & OPTION_SEPARATE_MOTIONS)
+               select_angular_motion_units( );
             break;
          case 'p': case 'P':
             if( vect_frame > -1)
@@ -1344,12 +1555,17 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
             break;
          case 'z': case 'Z':
             ephemeris_output_options ^= OPTION_MOTION_OUTPUT;
+            if( ephemeris_output_options & OPTION_MOTION_OUTPUT)
+               select_angular_motion_units( );
             break;
          case '#':
             ephemeris_output_options ^= OPTION_MOIDS;
             break;
          case '=':
             ephemeris_output_options ^= OPTION_CONSTELLATION;
+            break;
+         case '$':
+            ephemeris_output_options ^= OPTION_RV_AND_DELTA_SIGMAS;
             break;
          case 'q': case 'Q':
          case 27:
@@ -1360,6 +1576,12 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
             exit( 0);
             break;
 #endif
+         case KEY_UP:
+            offset_line--;
+            break;
+         case KEY_DOWN:
+            offset_line++;
+            break;
          default:
          case '\'': case '"': case '<':
          case ',': case '.': case '>':
@@ -1380,47 +1602,35 @@ static void create_ephemeris( const double *orbit, const double epoch_jd,
 
    if( c == -2)         /* yes,  we're making an ephemeris */
       {
-      if( !strcmp( mpc_code, "32b"))
-         {
-         inquire( ".b32 filename:",
-                               buff, sizeof( buff), COLOR_DEFAULT_INQUIRY);
-         if( *buff)
-            {
-            strcat( buff, ".b32");
-            create_b32_ephemeris( buff, epoch_jd, orbit, n_ephemeris_steps,
-                     atof( ephemeris_step_size), jd_start);    /* b32_eph.c */
-            }
-         }
+      const double *orbits_to_use = orbit;
+      extern const char *ephemeris_filename;
+      unsigned n_orbits = 1;
+      const bool is_observables =
+               ((ephemeris_output_options & 7) == OPTION_OBSERVABLES);
+
+      if( is_observables && (ephemeris_output_options & OPTION_SHOW_SIGMAS))
+         orbits_to_use = set_up_alt_orbits( orbit, &n_orbits);
+      if( ephemeris_in_a_file_from_mpc_code(
+            get_file_name( buff, ephemeris_filename),
+            orbits_to_use, obs, n_obs,
+            epoch_jd, jd_start, ephemeris_step_size,
+            n_ephemeris_steps, mpc_code,
+            ephemeris_output_options, n_orbits))
+         inquire( "Ephemeris generation failed!  Hit any key:", NULL, 0,
+                           COLOR_MESSAGE_TO_USER);
       else
          {
-         const double *orbits_to_use = orbit;
-         extern const char *ephemeris_filename;
-         unsigned n_orbits = 1;
-
-         if( (ephemeris_output_options & 7) == OPTION_OBSERVABLES &&
-                     (ephemeris_output_options & OPTION_SHOW_SIGMAS))
-            orbits_to_use = set_up_alt_orbits( orbit, &n_orbits);
-         if( ephemeris_in_a_file_from_mpc_code(
-               get_file_name( buff, ephemeris_filename),
-               orbits_to_use, obs, n_obs,
-               epoch_jd, jd_start, ephemeris_step_size,
-               n_ephemeris_steps, mpc_code,
-               ephemeris_output_options, n_orbits))
-            inquire( "Ephemeris generation failed!  Hit any key:", NULL, 0,
-                              COLOR_MESSAGE_TO_USER);
-         else
+         show_a_file( get_file_name( buff, ephemeris_filename),
+                        (is_observables? SHOW_FILE_IS_EPHEM : 0));
+         create_resid_file( obs, n_obs, input_filename, residual_format);
+         make_pseudo_mpec( get_file_name( buff, "mpec.htm"), obj_name);
+         if( ephemeris_output_options
+                  & (OPTION_STATE_VECTOR_OUTPUT | OPTION_POSITION_OUTPUT))
             {
-            show_a_file( get_file_name( buff, ephemeris_filename), SHOW_FILE_IS_EPHEM);
-            create_resid_file( obs, n_obs, input_filename, residual_format);
-            make_pseudo_mpec( get_file_name( buff, "mpec.htm"), obj_name);
-            if( ephemeris_output_options
-                     & (OPTION_STATE_VECTOR_OUTPUT | OPTION_POSITION_OUTPUT))
-               {
-               FILE *ofile = fopen_ext( ephemeris_filename, "tfca");
+            FILE *ofile = fopen_ext( ephemeris_filename, "tfca");
 
-               add_ephemeris_details( ofile, jd_start, jd_end);
-               fclose( ofile);
-               }
+            add_ephemeris_details( ofile, jd_start, jd_end);
+            fclose( ofile);
             }
          }
       }
@@ -1592,11 +1802,12 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
             }
          put_colored_text( "[?]", 0, xmax - 4, 3,
                               A_REVERSE | COLOR_BACKGROUND);
+         put_colored_text( "Open...", n_lines + 1, x0 + 12, 7, COLOR_HIGHLIT_BUTTON);
+         put_colored_text( "About", n_lines + 1, x0 + 6, 5, COLOR_HIGHLIT_BUTTON);
+         put_colored_text( "HELP", n_lines + 1, x0 + 20, 4, COLOR_HIGHLIT_BUTTON);
          if( *search_text)
             put_colored_text( search_text, n_lines + 1, x0,
                       (int)strlen( search_text), COLOR_FINAL_LINE);
-         put_colored_text( "Open...", n_lines + 1, x0 + 12, 7, COLOR_HIGHLIT_BUTTON);
-         put_colored_text( "HELP", n_lines + 1, x0 + 20, 4, COLOR_HIGHLIT_BUTTON);
          flushinp( );
          do
             {
@@ -1604,10 +1815,11 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
             err_message = 0;
             if( c == KEY_MOUSE)
                {
-               int x, y, z;
+               int x, y, z, dx;
                mmask_t button;
 
                get_mouse_data( &x, &y, &z, &button);
+               dx = x - x0;
                if( button & REPORT_MOUSE_POSITION)
                   c = 0;
                else if( button & BUTTON4_PRESSED)   /* actually 'wheel up' */
@@ -1618,14 +1830,17 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
                   c = '?';                 /* clicked on [?] at upper right */
                else if( y < n_lines)
                   choice = curr_page + y + (x / column_width) * n_lines;
-               else if( y == n_lines + 1 && x >= x0 - 12 && x < x0 + 19)
-                  c = ALT_F;           /* clicked on 'Open...' */
-               else if( y == n_lines + 1 || y == n_lines)
-                  c = '?';
-               else if( y == n_lines + 2 && x >= x0)
+               else if( y == n_lines + 1 && dx >= 6)
                   {
-                  const int dx = x - x0;
-
+                  if( dx >= 19)
+                     c = '?';           /* clicked on 'HELP' */
+                  else if( dx >= 11)
+                     c = ALT_F;           /* clicked on 'Open...' */
+                  else
+                     c = '.';           /* clicked on 'About' */
+                  }
+               else if( y == n_lines + 2 && dx > 0)
+                  {
                   if( dx >= 20)
                      c = 27;          /* quit */
                   else if( dx >= 15)
@@ -1645,7 +1860,7 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
             c = 8;
                      /* if a letter/number is hit,  look for an obj that */
                      /* starts with that letter/number: */
-         if( (c >= ' ' && c <= 'z' && c != '?') || c == 8)
+         if( (c >= ' ' && c <= 'z' && c != '?' && c != '.') || c == 8)
             {
             size_t len = strlen( search_text);
 
@@ -1685,6 +1900,9 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
 #endif
          switch( c)
             {
+            case '.':
+               show_splash_screen_and_wait( );
+               break;
             case '?':
                show_a_file( "obj_help.txt", 0);
                break;
@@ -1817,9 +2035,23 @@ static int get_character_code( const char *buff)
 {
    int rval;
 
-   if( !memcmp( buff, "Alt-", 4))
+   if( *buff <= ' ')
+      rval = 0;
+   else if( !memcmp( buff, "Lt", 2))
+      rval = KEY_LEFT;
+   else if( !memcmp( buff, "Rt", 2))
+      rval = KEY_RIGHT;
+   else if( !memcmp( buff, "Up", 2))
+      rval = KEY_UP;
+   else if( !memcmp( buff, "Dn", 2))
+      rval = KEY_DOWN;
+   else if( !memcmp( buff, "Alt-", 4))
       {
-      if( buff[4] >= 'A' && buff[4] <= 'Z')
+      if( !memcmp( buff + 4, "Up", 2))
+         rval = ALT_UP;
+      else if( !memcmp( buff + 4, "Dn", 2))
+         rval = ALT_DOWN;
+      else if( buff[4] >= 'A' && buff[4] <= 'Z')
          rval = ALT_A + buff[4] - 'A';
       else
          rval = ALT_0 + buff[4] - '0';
@@ -1829,7 +2061,37 @@ static int get_character_code( const char *buff)
    else if( *buff == 'U' && buff[1] == '+')
       rval = atoi( buff + 2);
    else if( !memcmp( buff, "Ctrl-", 5))
-      rval = buff[5] - 64;
+      {
+      if( !memcmp( buff + 5, "Up", 2))
+         rval = CTL_UP;
+      else if( !memcmp( buff + 5, "Dn", 2))
+         rval = CTL_DN;
+      else if( !memcmp( buff + 5, "Lf", 2))
+         rval = CTL_LEFT;
+      else if( !memcmp( buff + 5, "Rt", 2))
+         rval = CTL_RIGHT;
+      else
+         rval = buff[5] - 64;
+      }
+   else if( !memcmp( buff, "Shift-", 6))
+      {
+      if( !memcmp( buff + 6, "Up", 2))
+         rval = KEY_SR;
+      else if( !memcmp( buff + 6, "Dn", 2))
+         rval = KEY_SF;
+      else if( !memcmp( buff + 6, "Lf", 2))
+         rval = KEY_SLEFT;
+      else if( !memcmp( buff + 6, "Rt", 2))
+         rval = KEY_SRIGHT;
+      else if( buff[6] == 'F')
+         rval = KEY_F( 12 + atoi( buff + 7));
+      else        /* shouldn't happen */
+         {
+         rval = 0;
+         fprintf( stderr, "Buff '%s'\n", buff);
+         assert( 0);
+         }
+      }
    else
       rval = *buff;
    return( rval);
@@ -1861,35 +2123,36 @@ static unsigned show_basic_info( const OBSERVE FAR *obs, const int n_obs,
       {
       while( fgets_trimmed( buff, sizeof( buff), ifile)
                      && memcmp( buff, "End", 3))
-         {
-         const unsigned len = (unsigned)strlen( buff + 15);
-         unsigned max_column_this_line = max_column, key;
-
-         if( line == 1)
-            max_column_this_line -= (max_lines_to_show > 1 ? 12 : 8);
-         if( column + len >= max_column_this_line)
+         if( *buff != ' ')
             {
-            if( line == max_lines_to_show)
+            const unsigned len = (unsigned)strlen( buff + 15);
+            unsigned max_column_this_line = max_column, key;
+
+            if( line == 1)
+               max_column_this_line -= (max_lines_to_show > 1 ? 12 : 8);
+            if( column + len >= max_column_this_line)
                {
-               fclose( ifile);
-               add_cmd_area( KEY_ADD_MENU_LINE, 0, max_column - 8, 3);
-               put_colored_text( "[+]", 0, max_column - 8, 3, COLOR_MENU);
-               return( line);
+               if( line == max_lines_to_show)
+                  {
+                  fclose( ifile);
+                  add_cmd_area( KEY_ADD_MENU_LINE, 0, max_column - 8, 3);
+                  put_colored_text( "[+]", 0, max_column - 8, 3, COLOR_MENU);
+                  return( line);
+                  }
+               if( line == 1)        /* we could subtract lines */
+                  {
+                  add_cmd_area( KEY_REMOVE_MENU_LINE, 0, max_column - 12, 3);
+                  put_colored_text( "[-]", 0, max_column - 12, 3, COLOR_MENU);
+                  }
+               column = 0;
+               line++;
+               put_colored_text( "", line - 1, column, -1, COLOR_BACKGROUND);
                }
-            if( line == 1)        /* we could subtract lines */
-               {
-               add_cmd_area( KEY_REMOVE_MENU_LINE, 0, max_column - 12, 3);
-               put_colored_text( "[-]", 0, max_column - 12, 3, COLOR_MENU);
-               }
-            column = 0;
-            line++;
-            put_colored_text( "", line - 1, column, -1, COLOR_BACKGROUND);
+            key = get_character_code( buff);
+            add_cmd_area( key, line - 1, column, len);
+            put_colored_text( buff + 15, line - 1, column, len, COLOR_MENU);
+            column += len + 1;
             }
-         key = get_character_code( buff);
-         add_cmd_area( key, line - 1, column, len);
-         put_colored_text( buff + 15, line - 1, column, len, COLOR_MENU);
-         column += len + 1;
-         }
       fclose( ifile);
       }
    if( line != 1)
@@ -2070,15 +2333,23 @@ static void show_right_hand_scroll_bar( const int line_start,
          {
          int color = COLOR_SCROLL_BAR;
          const char *text = "|";
+         const char *end_text = "-";
 
-         if( !i || i == lines_to_show - 1)
+         if( !i)
             {
             color = COLOR_OBS_INFO;
-            text = (i ? "v" : "^");
+            text = (first_line ? "^" : end_text);
+            }
+         else if( i == lines_to_show - 1)
+            {
+            color = COLOR_OBS_INFO;
+            text = (first_line + lines_to_show == n_lines ? end_text : "v");
             }
          else
             if( i >= scroll0 && i <= scroll1)
                color = COLOR_HIGHLIT_BUTTON;
+         if( text == end_text)
+            color = COLOR_MENU;
          put_colored_text( text, i + line_start, getmaxx( stdscr) - 1, -1,
                               color);
          }
@@ -2140,6 +2411,7 @@ static void show_one_observation( OBSERVE obs, const int line,
    int color = COLOR_BACKGROUND;       /* show in 80-column MPC */
    char resid_data[70];      /* format, w/added data if it fits */
    const int dropped_start = 12;     /* ...but omit designation */
+   size_t i, len;
 
    put_colored_text( "", line, 0, -1, COLOR_BACKGROUND);
    add_to_mpc_color( obs.mpc_code, 1000);
@@ -2173,7 +2445,11 @@ static void show_one_observation( OBSERVE obs, const int line,
       }
                      /* show corresponding 1s or 0.1s HHMMSS fmt */
    recreate_observation_line( buff, &obs, residual_format);
-   memmove( buff, buff + dropped_start, strlen( buff + dropped_start) + 1);
+   assert( 80 == strlen( buff));
+   len = strlen( buff + dropped_start) + 1;
+   for( i = 0; i < len; i++)
+      buff[i] = buff[i + dropped_start];
+/* memmove( buff, buff + dropped_start, strlen( buff + dropped_start) + 1);   */
    strcat( buff, resid_data);
    if( obs.flags & OBS_IS_SELECTED)
       color = COLOR_SELECTED_OBS;
@@ -2194,14 +2470,17 @@ static void show_one_observation( OBSERVE obs, const int line,
 }
 
 static void show_observations( const OBSERVE *obs, const int first_obs_idx,
-                int line_no, const int residual_format, const int n_obs_shown)
+                int line_no, const int residual_format, const int n_obs_shown,
+                const int n_obs)
 {
    int i;
-   const int underline_freq = atoi( get_environment_ptr( "UNDERLINE_OBS"));
 
    for( i = first_obs_idx; i < first_obs_idx + n_obs_shown; i++)
+      {
+      add_cmd_area( KEY_OBSCODE_CLICKED, line_no, 65, 3);
       show_one_observation( obs[i], line_no++, residual_format,
-            underline_freq && i % underline_freq == underline_freq - 1);
+            i == n_obs - 1);
+      }
 }
 
 static void show_final_line( const int n_obs,
@@ -2256,6 +2535,15 @@ static void show_residual_legend( const int line_no, const int residual_format)
                   ? "      Xres  Yres  total Mres"
                   : "      Tres  Cres  total Mres");
 
+   if( residual_format & RESIDUAL_FORMAT_SHOW_DESIGS)
+      text_search_and_replace( buff, "sigmas", "desigs");
+   else
+      {
+      extern int sigmas_in_columns_57_to_65;
+
+      if( !sigmas_in_columns_57_to_65)
+         text_search_and_replace( buff, "sigmas", "------");
+      }
    put_colored_text( buff, line_no, 0, -1, COLOR_RESIDUAL_LEGEND);
    add_cmd_area( 't', line_no, 73, 10);  /* click on 'Xres  Yres' resets resid format */
    add_cmd_area( '=', line_no, 85, 7);   /* click on ' delta ' toggles mag resids */
@@ -2268,10 +2556,46 @@ static void show_residual_legend( const int line_no, const int residual_format)
 static int find_rgb( const int irgb);
 static void set_color_table( void);
 
+static void drop_starting_columns( char *buff, const int start_column)
+{
+   char *tptr = (char *)find_nth_utf8_char( buff, (size_t)start_column);
+
+   memmove( buff, tptr, strlen( tptr) + 1);
+}
+
+/* Ephemeris files may contain a six-character hexadecimal color,
+computed using sky background brightness data,  prefaced by
+'$'.  This should be removed before the line is shown to a user.
+The RGB value is returned,  and may (or may not) be made use of. */
+
+static int remove_rgb_code( char *buff, int *offset)
+{
+   unsigned rval = (unsigned)-1;
+   size_t i;
+   char *loc = buff;
+
+   while( (loc = strchr( loc, '$')) != NULL)
+      {
+      i = 1;
+      while( i < 7 && isxdigit( loc[i]))
+         i++;
+      if( i == 7)    /* yes,  it's a $ followed by six hex digits */
+         {
+         sscanf( loc + 1, "%06x", &rval);
+         if( offset)
+            *offset = (int)( loc - buff);
+         memmove( loc, loc + 7, strlen( loc + 6));
+         return( (int)rval);
+         }
+      loc++;      /* loop to look for further '$'s   */
+      }
+   return( -1);
+}
+
 static void show_a_file( const char *filename, const int flags)
 {
-   FILE *ifile = fopen_ext( filename, "tclrb");
-   char buff[260], err_text[100];
+   FILE *ifile = fopen_ext( filename, "tcrb");
+   char buff[560], err_text[100];
    int line_no = 0, keep_going = 1;
    int n_lines = 0, msg_num = 0;
    bool search_text_found = true;
@@ -2280,9 +2604,11 @@ static void show_a_file( const char *filename, const int flags)
    char search_text[100];
    int calendar_line = -99, calendar_col = -1;
    int calendar_cell_width, calendar_cell_height;
+   int start_column = 0;
+   size_t max_column_shown = 0;
 
    if( !ifile)
-      ifile = fopen_ext( filename, "clrb");
+      ifile = fopen_ext( filename, "crb");
    if( !ifile)
       {
       snprintf_err( buff, sizeof( buff), "Couldn't open '%s'", filename);
@@ -2323,7 +2649,7 @@ static void show_a_file( const char *filename, const int flags)
       day_to_dmy( jd, &day, &month, &year, CALENDAR_GREGORIAN);
       day0 = (int)( jd - (long)day + 2) % 7;
       day0 += day - 1;
-      calendar_line = ((year - calendar_year0) + month - 1);
+      calendar_line = ((year - calendar_year0) * 12 + month - 1);
       calendar_line *= calendar_cell_height * 5 + 5;
       calendar_line += ((day0 / 7) % 5) * calendar_cell_height + 6;
       calendar_col = (day0 % 7) * calendar_cell_width;
@@ -2341,7 +2667,6 @@ static void show_a_file( const char *filename, const int flags)
       int top_line;
       int color_start = 18;      /* see 'command.txt' */
       short color_pair_idx = (short)color_start;
-      short color_idx = (short)color_start * 2;
       const bool color_visibility =
                   n_lines_to_show + color_start < COLORS;
 
@@ -2355,12 +2680,20 @@ static void show_a_file( const char *filename, const int flags)
          top_line = n_lines - n_lines_to_show;
       if( top_line < 0)
          top_line = 0;
+      if( start_column > (int)max_column_shown - COLS + 2)
+         start_column = (int)max_column_shown - COLS + 2;
+      if( start_column < 0)
+         start_column = 0;
+      max_column_shown = 0;
       if( is_ephem)
          {
          fseek( ifile, 0L, SEEK_SET);
          for( i = 0; i < 3; i++)
             {
             fgets_trimmed( buff, sizeof( buff), ifile);
+            if( max_column_shown < strlen( buff))
+               max_column_shown = strlen( buff);
+            drop_starting_columns( buff, start_column);
             put_colored_text( buff, i, 0, -1, COLOR_BACKGROUND);
             }
          }
@@ -2371,41 +2704,35 @@ static void show_a_file( const char *filename, const int flags)
          const int curr_line = top_line + i;
          int color_col[20], rgb[20], n_colored = 0, j;
 
-         if( i > 3 && flags && color_visibility)
-            {
-            char *tptr = buff;
-
-            while( (tptr = strchr( tptr, '$')) != NULL)
-               {
-               color_col[n_colored] = (int)(tptr - buff) - 7 * n_colored;
-               tptr++;
-               sscanf( tptr, "%6x", (unsigned *)rgb + n_colored);
-               n_colored++;
-               }
-            }
-         remove_rgb_code( buff);
+         while( (rgb[n_colored] = remove_rgb_code( buff, color_col + n_colored)) >= 0)
+            n_colored++;
+         if( i < 3)     /* don't try to 'colorize' top lines */
+            n_colored = 0;
+         if( max_column_shown < strlen( buff))
+            max_column_shown = strlen( buff);
+         drop_starting_columns( buff, start_column);
          if( i >= 3 || !is_ephem)
             put_colored_text( buff, i, 0, -1,
                (line_no == curr_line ? COLOR_ORBITAL_ELEMENTS : COLOR_BACKGROUND));
-         for( j = 0; j < n_colored; j++)
-            {
-            const int blue =  ((rgb[j] >> 3) & 0x1f);
-            const int green = ((rgb[j] >> 11) & 0x1f);
-            const int red =   ((rgb[j] >> 19) & 0x1f);
-            const int text_color = find_rgb(
-                              blue + red + green > 48 ? 0 : 0xffffff);
+         assert( n_colored < 2);
+         if( color_visibility)
+            for( j = 0; j < n_colored; j++)
+               if( color_col[j] >= start_column)
+                  {
+                  const int blue =  ((rgb[j] >> 3) & 0x1f);
+                  const int green = ((rgb[j] >> 11) & 0x1f);
+                  const int red =   ((rgb[j] >> 19) & 0x1f);
+                  const int text_color = find_rgb(
+                                    blue + red + green > 48 ? 0 : 0xffffff);
 
-            if( can_change_color( ))
-               {
-               init_color( color_idx, red * 999 / 31, green * 999 / 31, blue * 999 / 31);
-               init_pair( color_pair_idx, text_color, color_idx);
-               color_idx++;
-               }
-            else
-               init_pair( color_pair_idx, text_color, find_rgb( rgb[j]));
-            mvchgat( i, color_col[j], 2, A_NORMAL, color_pair_idx, NULL);
-            color_pair_idx++;
-            }
+#ifdef __PDCURSESMOD__
+                  init_extended_pair( color_pair_idx, text_color, find_rgb( rgb[j]));
+#else
+                  init_pair( color_pair_idx, text_color, find_rgb( rgb[j]));
+#endif
+                  mvchgat( i, color_col[j] - start_column, 2, A_NORMAL, color_pair_idx, NULL);
+                  color_pair_idx++;
+                  }
          if( calendar_col >= 0 && curr_line > calendar_line - 2
                    && curr_line < calendar_line + calendar_cell_height - 2)
             mvchgat( i, calendar_col + 1, calendar_cell_width - 1, 0, COLOR_OBS_INFO, NULL);
@@ -2497,6 +2824,21 @@ static void show_a_file( const char *filename, const int flags)
          case KEY_END:
             line_no = n_lines - 1;
             break;
+#ifdef KEY_B3
+         case KEY_B3:
+#endif
+         case KEY_RIGHT:
+         case 9:     /* tab */
+            start_column += 8;
+            break;
+#ifdef KEY_B1
+         case KEY_B1:
+#endif
+         case KEY_LEFT:
+         case KEY_BTAB:
+            if( start_column)
+               start_column = (start_column - 1) & ~0x7;
+            break;
          case KEY_A1:
          case KEY_HOME:
             line_no = top_possible_line;
@@ -2562,7 +2904,7 @@ static void show_a_file( const char *filename, const int flags)
                   fseek( ifile, 0L, SEEK_SET);
                   while( fgets( tbuff, sizeof( tbuff), ifile))
                      {
-                     remove_rgb_code( tbuff);
+                     remove_rgb_code( tbuff, NULL);
                      fputs( tbuff, ofile);
                      }
                   fclose( ofile);
@@ -2725,73 +3067,10 @@ static void put_colored_text( const char *text, const int line_no,
    attroff( color & attrib_mask);
 }
 
-OBSERVE *add_observations( FILE *ifile, OBSERVE *obs,
-                  const OBJECT_INFO *ids, int *n_obs)
-{
-   OBSERVE *obs2 = load_observations( ifile, ids->packed_desig, ids->n_obs);
-   extern int n_obs_actually_loaded;
-
-   if( debug_level)
-      printf( "Got %d new obs\n", n_obs_actually_loaded);
-   fclose( ifile);
-   obs = (OBSERVE *)realloc( obs,
-                 (*n_obs + n_obs_actually_loaded) * sizeof( OBSERVE));
-   memcpy( obs + *n_obs, obs2, n_obs_actually_loaded * sizeof( OBSERVE));
-   *n_obs += n_obs_actually_loaded;
-   free( obs2);
-   *n_obs = sort_obs_by_date_and_remove_duplicates( obs, *n_obs);
-   return( obs);
-}
-
 int find_first_and_last_obs_idx( const OBSERVE *obs, const int n_obs,
          int *last);       /* elem_out.cpp */
 double mid_epoch_of_arc( const OBSERVE *obs, const int n_obs);
 
-static double get_elements( const char *filename, double *state_vect)
-{
-   ELEMENTS elem;
-   FILE *ifile = fopen( filename, "rb");
-   char buff[82];
-
-   memset( &elem, 0, sizeof( ELEMENTS));
-   if( ifile)
-      {
-      while( fgets_trimmed( buff, sizeof( buff), ifile))
-         if( !memcmp( buff, "Epoch:", 6))
-            elem.epoch = get_time_from_string( 0., buff + 6,
-                     FULL_CTIME_YMD | CALENDAR_JULIAN_GREGORIAN, NULL);
-         else if( !memcmp( buff, "q:", 2))
-            elem.q = atof( buff + 2);
-         else if( !memcmp( buff, "e:", 2))
-            elem.ecc = atof( buff + 2);
-         else if( !memcmp( buff, "a:", 2))
-            elem.q = atof( buff + 2) * (1. - elem.ecc);
-         else if( !memcmp( buff, "i:", 2))
-            elem.incl = atof( buff + 2) * PI / 180;
-         else if( !memcmp( buff, "omega:", 6))
-            elem.arg_per = atof( buff + 6) * PI / 180;
-         else if( !memcmp( buff, "node:", 5))
-            elem.asc_node = atof( buff + 5) * PI / 180;
-         else if( !memcmp( buff, "M:", 2))
-            elem.mean_anomaly = atof( buff + 2) * PI / 180;
-         else if( !memcmp( buff, "L:", 2))
-            elem.mean_anomaly = atof( buff + 2) * PI / 180
-                        - elem.arg_per - elem.asc_node;
-         else if( !memcmp( buff, "pi:", 3))
-            elem.mean_anomaly = atof( buff + 3) * PI / 180
-                         - elem.arg_per;
-      fclose( ifile);
-      }
-   if( elem.epoch)
-      {
-      derive_quantities( &elem, SOLAR_GM);
-      elem.perih_time = elem.epoch - elem.mean_anomaly * elem.t0;
-      elem.angular_momentum = sqrt( SOLAR_GM * elem.q);
-      elem.angular_momentum *= sqrt( 1. + elem.ecc);
-      comet_posn_and_vel( &elem, elem.epoch, state_vect, state_vect + 3);
-      }
-   return( elem.epoch);
-}
 
 /* I really should use getopt() or a portable variant.  However,  this has
 been sufficiently effective thus far... */
@@ -2833,16 +3112,26 @@ static int find_rgb( const int irgb)
    rgb0[0] = (int)( irgb >> 16);
    rgb0[1] = (int)( (irgb >> 8) & 0xff);
    rgb0[2] = (int)( irgb & 0xff);
+#ifdef __PDCURSESMOD__
+   if( COLORS == 256 + (1 << 24))
+      return( 256 + rgb0[0] + (rgb0[1] << 8) + (rgb0[2] << 16));
+#endif
    if( COLORS <= 8 || force_eight_color_mode)
       return( (rgb0[0] > 127 ? 1 : 0) | (rgb0[1] > 127 ? 2 : 0)
                                       | (rgb0[2] > 127 ? 4 : 0));
-   if( !can_change_color( ) && COLORS >= 256)
+   if( COLORS >= 256)
       {
-      const int r_idx = (rgb0[0] + 10) / 50;
-      const int g_idx = (rgb0[1] + 10) / 50;
-      const int b_idx = (rgb0[2] + 10) / 50;
+      if( rgb0[0] == rgb0[1] && rgb0[0] == rgb0[2]    /* gray-scale */
+                                 && rgb0[0] > 4 && rgb0[0] < 247)
+         return( 232 + (rgb0[0] - 4) / 10);
+      else
+         {
+         const int r_idx = (rgb0[0] + 10) / 50;
+         const int g_idx = (rgb0[1] + 10) / 50;
+         const int b_idx = (rgb0[2] + 10) / 50;
 
-      return( 16 + b_idx + 6 * g_idx + 36 * r_idx);
+         return( 16 + b_idx + 6 * g_idx + 36 * r_idx);
+         }
       }
    for( i = 0; i < 3; i++)
       rgb0[i] = rgb0[i] * 200 / 51;
@@ -2875,7 +3164,7 @@ static int find_rgb( const int irgb)
       /* hope it works (it usually will)                          */
 static void PDC_set_title( const char *title)
 {
-   printf( "\033\x5d\x32;%s\a", title);
+   printf( OSC "\x32;%s\a", title);
    fflush( stdout);
 }
 #endif
@@ -2894,36 +3183,62 @@ static void set_color_table( void)
          unsigned fore_rgb, back_rgb;
 
          if( 3 == sscanf( buff + 1, "%d %x %x", &idx, &fore_rgb, &back_rgb))
+#ifdef __PDCURSESMOD__
+            init_extended_pair( idx, find_rgb( fore_rgb), find_rgb( back_rgb));
+#else
             init_pair( idx, find_rgb( fore_rgb), find_rgb( back_rgb));
+#endif
          }
    fclose( ifile);
 }
 
+static int *get_key_remap_table( void)
+{
+   FILE *ifile = fopen_ext( "command.txt", "fcrb");
+   char buff[90];
+   int *rval = (int *)calloc( 200, sizeof( int)), from, to;
+   size_t i = 0;
+
+   while( fgets( buff, sizeof( buff), ifile) && memcmp( buff, "Start re", 8))
+      ;
+   while( fgets( buff, sizeof( buff), ifile))
+      if( (from = get_character_code( buff)) > 0
+                  && (to = get_character_code( buff + 15)) > 0)
+         {
+         rval[i++] = from;
+         rval[i++] = to;
+         }
+   rval = (int *)realloc( rval, (i + 2) * sizeof( int));
+   fclose( ifile);
+   return( rval);
+}
+
 static SCREEN *screen_ptr;
 
-static inline int initialize_curses( const int argc, const char **argv)
+static inline int initialize_curses( void)
 {
 #ifdef __PDCURSES__
    ttytype[0] = 20;    /* Window must have at least 20 lines in Win32a */
    ttytype[1] = 55;    /* Window can have a max of 55 lines in Win32a */
    ttytype[2] = 70;    /* Window must have at least 70 columns in Win32a */
    ttytype[3] = (char)200; /* Window can have a max of 200 columns in Win32a */
-#else
-   PDC_set_title( get_find_orb_text( 18));
-#endif
 
+   PDC_set_title( get_find_orb_text( 18));
 #ifdef XCURSES
    resize_term( 50, 98);
-   Xinitscr( argc, (char **)argv);
-   screen_ptr = SP;
-#else
-   INTENTIONALLY_UNUSED_PARAMETER( argc);
-   INTENTIONALLY_UNUSED_PARAMETER( argv);
+#endif
+   screen_ptr = newterm( NULL, stdout, stdin);
+#else             /* not PDCurses,  assume ncurses */
 
-   char xterm_256color_name[20];
+   screen_ptr = NULL;
+   if( !force_eight_color_mode)
+      {
+      char xterm_256color_name[20];
 
-   strlcpy_error( xterm_256color_name, "xterm-256color");
-   if( force_eight_color_mode || !(screen_ptr = newterm( xterm_256color_name, stdout, stdin)))
+      strlcpy_error( xterm_256color_name, "xterm-256color");
+      screen_ptr = newterm( xterm_256color_name, stdout, stdin);
+      }
+   if( !screen_ptr)
       screen_ptr = newterm( NULL, stdout, stdin);
 #endif
    if( debug_level > 2)
@@ -2946,17 +3261,10 @@ static inline int initialize_curses( const int argc, const char **argv)
    PDC_set_title( get_find_orb_text( 18));
                               /* "Find_Orb -- Orbit Determination" */
 #endif
-#ifdef VT_RECEIVE_ALL_MOUSE
-   printf( VT_RECEIVE_ALL_MOUSE);
-#endif
+   _enable_mouse_movements( );
    if( debug_level > 2)
       debug_printf( "(3)\n");
    keypad( stdscr, 1);
-#ifdef MOUSE_MOVEMENT_EVENTS_ENABLED
-   mousemask( default_mouse_events | REPORT_MOUSE_POSITION, NULL);
-#else
-   mousemask( default_mouse_events, NULL);
-#endif
    set_color_table( );
    return( 0);
 }
@@ -3050,7 +3358,7 @@ static int user_select_file( char *filename, const char *title, const int flags)
 
          /* dialog and Xdialog take the same options : */
    full_endwin( );
-   sprintf( strchr( cmd, '~'), "~ %d %d",
+   snprintf_err( strchr( cmd, '~'), 12, "~ %d %d",
                           getmaxy( stdscr) - 15, getmaxx( stdscr) - 3);
    rval = try_a_file_dialog_program( filename, cmd + 1);
    restart_curses( );
@@ -3063,8 +3371,9 @@ static int user_select_file( char *filename, const char *title, const int flags)
    if( !inquire( "Enter file name :", filename, 100, COLOR_DEFAULT_INQUIRY)
                      && *filename)
       {
-      if( *filename == '~')
-         text_search_and_replace( filename, "~", getenv( "HOME"));
+#ifndef _WIN32
+      fix_home_dir( filename);
+#endif
       return( 0);
       }
    else
@@ -3081,6 +3390,8 @@ static int count_wide_chars_in_utf8_string( const char *iptr, const char *endptr
 {
    int rval = 0;
 
+   assert( iptr);
+   assert( endptr >= iptr);
    while( iptr < endptr)
       {
       switch( ((unsigned char)*iptr) >> 4)
@@ -3142,6 +3453,7 @@ static bool filename_fits_current_os( const char *filename)
 }
 
 static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
+                    const size_t err_buff_size,
                     const bool drop_single_obs, const bool already_got_obs)
 {
    OBJECT_INFO *ids;
@@ -3149,6 +3461,7 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
    size_t n_lines, i;
    const char *prev_fn = "previous.txt";
    char **prev_files = load_file_into_memory( prev_fn, &n_lines, false);
+   bool is_temp_file = false;
 
    if( !prev_files)
       prev_files = load_file_into_memory( "previous.def", &n_lines, true);
@@ -3172,21 +3485,30 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
       {
       const size_t buffsize = 8000;
       char *buff = (char *)malloc( buffsize);
-      int c, base_key = (int)KEY_F( 4);
+      int c, base_key = (int)KEY_F( 5);
       size_t n_prev = 0, prev_idx[60];
       struct stat file_info;
       FILE *ifile;
-      const char *hotkeys = "0123456789abdeghijklmoprstuvwxyz;',./=-[]()*&^%$#@!:<>", *tptr;
+      const char *hotkeys = "0123456789abdeghijklmoprtuvwxyz;',./=-[]()*&^%$#@!:<>", *tptr;
 
       help_file_name = "openfile.txt";
       clear( );
-      ifile = fopen_ext( help_file_name, "fclrb");
+      ifile = fopen_ext( help_file_name, "fcrb");
       i = 0;
       while( fgets_trimmed( buff, buffsize, ifile) && *buff != '$')
          put_colored_text( buff, (int)i++, 0, -1, COLOR_BACKGROUND);
       fclose( ifile);
 
       strlcpy_err( buff, get_find_orb_text( 2031), buffsize);
+#ifdef _WIN32
+         {
+         char *sel_ptr = strstr( buff, "S ");
+
+         assert( sel_ptr);          /* remove 'selection' option; */
+         sel_ptr[-1] = '\0';        /* it doesn't work in Windows */
+         base_key--;
+         }
+#endif
       for( i = n_lines - 1; i && hotkeys[n_prev]
                                      && n_prev + 12 < (size_t)getmaxy( stdscr); i--)
          if( prev_files[i][0] != '#' && filename_fits_current_os( prev_files[i]))
@@ -3196,7 +3518,7 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
                snprintf_append( buff, buffsize, "\n%c ", hotkeys[n_prev]);
                strcat( buff, prev_files[i]);
 #ifndef _WIN32
-               text_search_and_replace( buff, getenv( "HOME"), "~");
+               fix_home_dir( buff);
 #endif
                prev_idx[n_prev++] = i;
                }
@@ -3205,7 +3527,8 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
             }
       strlcat_err( buff, (already_got_obs ? "\nQ Cancel" : "\nQ Quit"), buffsize);
 
-      c = inquire( buff, NULL, 30, COLOR_DEFAULT_INQUIRY);
+      while( 'C' == (c = inquire( buff, NULL, 30, COLOR_DEFAULT_INQUIRY)))
+         show_calendar( );
       free( buff);
       if( c >= ' ' && c < 127)
          {
@@ -3223,10 +3546,7 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
          case 'F': case 'f': case KEY_F( 1):
             user_select_file( ifilename, "Open astrometry file", 0);
             break;
-         case 'C': case 'c': case KEY_F( 2):
-            strcpy( ifilename, "c");
-            break;
-         case 'N': case 'n': case KEY_F( 3):
+         case 'N': case 'n': case KEY_F( 2):
             {
             char object_name[83];
 
@@ -3243,6 +3563,14 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
                }
             }
             break;
+         case 'c': case KEY_F( 3):
+            strcpy( ifilename, "c");
+            break;
+#ifndef _WIN32
+         case 's': case KEY_F( 4):
+            strcpy( ifilename, "s");
+            break;
+#endif
          case 'q': case 'Q': case 27:
             free( prev_files);
             *err_buff = '\0';    /* signals 'cancel' */
@@ -3253,17 +3581,31 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
    if( !*ifilename)
       {
       free( prev_files);
-      strcpy( err_buff, "'findorb' needs the name of an input file of MPC-formatted\n"
-               "astrometry as a command-line argument.\n");
+      strlcpy_err( err_buff,
+               "'findorb' needs the name of an input file of MPC-formatted\n"
+               "astrometry as a command-line argument.\n", err_buff_size);
       return( NULL);
       }
 
-   if( !strcmp( ifilename, "c") || !strcmp( ifilename, "c+"))
+   if( !strcmp( ifilename, "c") || !strcmp( ifilename, "c+")
+          || !strcmp( ifilename, "s") || !strcmp( ifilename, "s+"))
       {
-      clipboard_to_file( temp_obs_filename, ifilename[1] == '+');
+      const int err_code = clipboard_to_file( temp_obs_filename, ifilename[1] == '+',
+                              *ifilename == 's');
+
+      if( err_code)
+         inquire( get_find_orb_text(
+#ifdef _WIN32
+                        2076  /* "Clipboard is empty" */
+#else
+                        2039  /* "You need xclip to get at the clipboard" */
+#endif
+                                    ), NULL, 0, COLOR_MESSAGE_TO_USER);
       strcpy( ifilename, temp_obs_filename);
+      is_temp_file = true;
       }
 
+   show_splash_screen( );
    ids = find_objects_in_file( ifilename, n_ids, NULL);
    if( *n_ids > 0 && drop_single_obs)
       {
@@ -3284,12 +3626,12 @@ static OBJECT_INFO *load_file( char *ifilename, int *n_ids, char *err_buff,
          err_msg = "Couldn't locate the file '%s'\n";
       else
          err_msg = "No objects found in file '%s'\n";
-      sprintf( err_buff, err_msg, ifilename);
+      snprintf_err( err_buff, err_buff_size, err_msg, ifilename);
       if( ids)
          free( ids);
       ids = NULL;
       }
-   else
+   else if( !is_temp_file)
       {
       FILE *ofile = fopen_ext( prev_fn, "fcw");
 #if defined( _WIN32)
@@ -3331,7 +3673,8 @@ static int non_grav_menu( char *message_to_user)
    static int models[] = { FORCE_MODEL_NO_NONGRAVS, FORCE_MODEL_SRP,
             FORCE_MODEL_SRP_TWO_PARAM, FORCE_MODEL_SRP_THREE_PARAM,
             FORCE_MODEL_COMET_TWO_PARAM, FORCE_MODEL_COMET_THREE_PARAM,
-            FORCE_MODEL_COMET_FOUR_PARAM, FORCE_MODEL_YARKO_A2 };
+            FORCE_MODEL_COMET_FOUR_PARAM, FORCE_MODEL_YARKO_A2,
+            FORCE_MODEL_DELTA_V };
    const size_t n_models = sizeof( models) / sizeof( models[0]);
 
    while( i < n_models && force_model != models[i])
@@ -3341,7 +3684,7 @@ static int non_grav_menu( char *message_to_user)
    _set_radio_button( buff, (int)i);
    help_file_name = "nongravs.txt";
    c = full_inquire( buff, NULL, 0, COLOR_MENU, -1, -1);
-   if( c >= KEY_F(1) && c <= KEY_F(8))
+   if( c >= KEY_F(1) && c <= KEY_F(9))
       c -= KEY_F( 1);
    else
       c -= '0';
@@ -3476,32 +3819,110 @@ static void setup_elements_dialog( char *buff, const char *constraints)
    fclose( ifile);
 }
 
+static void eop_info_text( char *buff, const size_t buffsize)
+{
+   int eop_range[3];
+
+   load_earth_orientation_params( NULL, eop_range);
+   if( eop_range[0])
+      {
+      char date_buff[3][50];
+      size_t i;
+
+      for( i = 0; i < 3; i++)
+         full_ctime( date_buff[i], 2400000.5 + (double)eop_range[i],
+               FULL_CTIME_DATE_ONLY | FULL_CTIME_YMD);
+      snprintf_err( buff, (int)buffsize,
+               "EOPs run from %s to %s\n(%s with extrapolation)\n",
+                        date_buff[0], date_buff[2], date_buff[1]);
+      }
+   else
+      strlcpy_err( buff, "No EOPs available\n", buffsize);
+}
+
+static void debias_info_text( char *buff, const size_t buffsize)
+{
+   const int debias_version = find_fcct_biases( 1., 1., 0,
+                           0., NULL, NULL);
+
+   if( debias_version > 2000)
+      {
+      const char *ver = "?unknown?\n";
+
+      strlcpy_err( buff, "Astrometric debiasing version ", buffsize);
+      if( debias_version == 2018)
+         ver = "EFCC18\n";
+      else if( debias_version == 2014)
+         ver = "FCCT14\n";
+      strlcat_err( buff, ver, buffsize);
+      }
+   else
+      strlcpy_err( buff, "No astrometric debiasing applied\n", buffsize);
+}
+
+static void moon_info_text( char *buff, const size_t buffsize)
+{
+   const double jd = current_jd( );
+   const double nm_time = jd - get_time_from_string( jd, "nm", 0, NULL);
+   const double fm_time = jd - get_time_from_string( jd, "fm", 0, NULL);
+   const bool is_fm = (fabs( nm_time) > fabs( fm_time));
+   const double dt = (is_fm ? fm_time : nm_time);
+
+   snprintf_err( buff, buffsize, "%.1f days %s %s moon", fabs( dt),
+                  (dt < 0. ? "until" : "after"),
+                  (is_fm ? "full" : "new"));
+}
+
 static void show_splash_screen( void)
 {
    FILE *ifile = fopen_ext( "splash.txt", "crb");
 
    if( ifile)
       {
-      char buff[200];
+      char buff[200], eop_line_1[200], *eop_line_2;
+      char debias_text[100], jpl_ephem_text[250];
+      char moon_text[90];
       bool show_it = false;
+      int lines, cols, i;
 
+      moon_info_text( moon_text, sizeof( moon_text));
+      debias_info_text( debias_text, sizeof( debias_text));
+      eop_info_text( eop_line_1, sizeof( eop_line_1));
+      eop_line_2 = strchr( eop_line_1, '\n');
+      if( eop_line_2)
+         *eop_line_2++ = '\0';
+      if( !format_jpl_ephemeris_info( jpl_ephem_text))
+         strlcpy_error( jpl_ephem_text, " No JPL DE ephemeris set up");
       clear( );
       while( !show_it && fgets( buff, sizeof( buff), ifile))
-         {
-         int lines, cols, i;
-
-         sscanf( buff, "%d %d", &lines, &cols);
-         show_it = (lines < LINES && cols < COLS);
-         for( i = 0; i < lines && fgets_trimmed( buff, sizeof( buff), ifile); i++)
-            if( show_it)
-               {
-               text_search_and_replace( buff, "$v", find_orb_version_jd( NULL));
-               put_colored_text( buff, (LINES - lines) / 2 + i, 0, -1, COLOR_BACKGROUND);
-               }
-         }
+         if( 2 == sscanf( buff, "%d %d", &lines, &cols))
+            {
+            show_it = (lines < LINES && cols < COLS);
+            for( i = 0; i < lines && fgets_trimmed( buff, sizeof( buff), ifile); i++)
+               if( show_it)
+                  {
+                  text_search_and_replace( buff, "$v", find_orb_version_jd( NULL));
+                  text_search_and_replace( buff, "$d", debias_text);
+                  text_search_and_replace( buff, "$m", moon_text);
+                  text_search_and_replace( buff, "$e1", eop_line_1);
+                  text_search_and_replace( buff, "$e2", (eop_line_2 ? eop_line_2 : ""));
+                  text_search_and_replace( buff, "$j", jpl_ephem_text + 1);
+                  put_colored_text( buff, (LINES - lines) / 2 + i, 0, -1, COLOR_BACKGROUND);
+                  }
+            }
       doupdate( );
       fclose( ifile);
       }
+}
+
+static void show_splash_screen_and_wait( void)
+{
+   _disable_mouse_movements( );
+   do
+      {
+      show_splash_screen( );
+      } while( KEY_RESIZE == extended_getch( ));
+   _enable_mouse_movements( );
 }
 
 static int find_command_area( const unsigned mouse_x, const unsigned mouse_y,
@@ -3565,11 +3986,21 @@ static int show_hint( const unsigned mouse_x, const unsigned mouse_y, size_t *in
       while( fgets_trimmed( buff, sizeof( buff), ifile)
                   && memcmp( buff, "Start h", 7))
          ;   /* just skip lines until we get to the section we want */
-      while( !got_it && fgets_trimmed( buff, sizeof( buff), ifile))
-         got_it = (get_character_code( buff) == cmd);
+      while( !got_it && fgets_trimmed( buff, sizeof( buff), ifile)
+                         && memcmp( buff, "Start re", 8))
+         if( *buff > ' ')
+            got_it = (get_character_code( buff) == cmd);
       fclose( ifile);
       if( got_it)
+         {
+         char hotkey[15];
+
+         memcpy( hotkey, buff, 15);
+         *strchr( hotkey, ' ') = '\0';
          memmove( buff, buff + 15, strlen( buff + 14));
+         if( hotkey[1] != '+')      /* skip the U+nnnn cases */
+            snprintf_append( buff, sizeof( buff), "\nHotkey for this is %s", hotkey);
+         }
       else
          *buff = '\0';
       if( *buff)      /* yes,  we have a hint to show */
@@ -3631,27 +4062,29 @@ int main( int argc, const char **argv)
    int element_format = 0, debug_mouse_messages = 0, prev_getch = 0;
    int auto_repeat_full_improvement = 0, n_ids = 0, planet_orbiting = 0;
    OBJECT_INFO *ids = NULL;
-   double noise_in_arcseconds = 1.;
+   double noise_in_sigmas = 1.;
    double monte_data[MONTE_DATA_SIZE];
    extern int monte_carlo_object_count;
    extern char default_comet_magnitude_type;
    extern double max_monte_rms;
-   extern int use_config_directory;          /* miscell.c */
    double max_residual_for_filtering = 2.5;
    bool show_commented_elements = false;
    bool drop_single_obs = true;
-   int sort_obs_by_code = 0;
+   int sort_obs_by_code = 0, *key_remaps;
    int n_stations_shown = 0, top_obs_shown = 0, n_obs_shown = 0;
-   bool single_obs_selected = false;
+   bool single_obs_selected = false, appending_observations = false;
    extern unsigned random_seed;
    unsigned mouse_x = (unsigned)-1, mouse_y = 0, mouse_z = 0;
    mmask_t button = 0;
 
    random_seed = get_random_seed( );
-   if( !strcmp( argv[0], "find_orb"))
-      use_config_directory = true;
-   else
-      use_config_directory = false;
+   for( i = 1; i < argc; i++)
+      if( argv[i][0] == '-' && argv[i][1] == 'x')
+         {
+         extern const char *alt_config_directory;
+
+         alt_config_directory = get_arg( argc, argv, i);
+         }
    ensure_config_directory_exists();
    if( !setlocale( LC_ALL, "C.UTF-8"))
       setlocale( LC_ALL, "en_US.utf8");
@@ -3746,6 +4179,13 @@ int main( int argc, const char **argv)
             case 'n':
                max_mpc_color_codes = atoi( arg);
                break;
+            case 'N':
+               {
+               extern const char *fullname_pattern;
+
+               fullname_pattern = arg;
+               }
+               break;
             case 'O':          /* write output files to specified dir */
                {
                extern const char *output_directory;
@@ -3760,6 +4200,13 @@ int main( int argc, const char **argv)
                extern int process_count;
 
                process_count = atoi( arg);
+               }
+               break;
+            case 'P':
+               {
+               extern const char *desig_pattern;
+
+               desig_pattern = arg;
                }
                break;
             case 'q':
@@ -3790,6 +4237,8 @@ int main( int argc, const char **argv)
                      maximum_observation_jd =
                           get_time_from_string( 0., comma + 1,
                           FULL_CTIME_YMD | CALENDAR_JULIAN_GREGORIAN, NULL);
+                  else
+                     maximum_observation_jd = 1e+9;
                   }
                }
                break;
@@ -3815,7 +4264,9 @@ int main( int argc, const char **argv)
                state_vect_text = arg;
                }
                break;
-            case 'x':
+            case 'x':            /* handled above */
+               break;
+            case 'X':
                {
                extern bool saving_elements_for_reuse;
 
@@ -3827,14 +4278,6 @@ int main( int argc, const char **argv)
                extern int n_extra_full_steps;
 
                n_extra_full_steps = atoi( arg);
-               }
-               break;
-            case 'z':
-               {
-               extern const char *alt_config_directory;
-
-               use_config_directory = true;
-               alt_config_directory = arg;
                }
                break;
             default:
@@ -3867,7 +4310,7 @@ int main( int argc, const char **argv)
 
    get_defaults( &ephemeris_output_options, &element_format,
          &element_precision, &max_residual_for_filtering,
-         &noise_in_arcseconds);
+         &noise_in_sigmas);
 
    strlcpy_err( ephemeris_start, get_environment_ptr( "EPHEM_START"),
                   sizeof( ephemeris_start));
@@ -3882,14 +4325,16 @@ int main( int argc, const char **argv)
 
    if( debug_level)
       debug_printf( "%d sigma recs read\n", i);
+   key_remaps = get_key_remap_table( );
 
-
-   initialize_curses( argc, argv);
+   initialize_curses( );
 
    *message_to_user = '\0';
    while( !quit)
       {
       int line_no = 0, mouse_wheel_motion;
+      extern bool saving_elements_for_reuse;
+      int top_line_to_blink = 0, bottom_line_to_blink = 0;
 
       prev_getch = c;
       while( get_new_file || get_new_object)
@@ -3899,7 +4344,7 @@ int main( int argc, const char **argv)
             OBJECT_INFO *new_ids;
             int n_new_ids;
 
-            new_ids = load_file( ifilename, &n_new_ids, tbuff, drop_single_obs,
+            new_ids = load_file( ifilename, &n_new_ids, tbuff, 200, drop_single_obs,
                                      (ids ? true : false));
             if( !new_ids && !*tbuff && !ids)   /* at startup,  and hit Quit */
                goto Shutdown_program;
@@ -3956,6 +4401,8 @@ int main( int argc, const char **argv)
                {
                FILE *ifile;
                long file_offset;
+               OBSERVE *prev_obs = obs;
+               int prev_n_obs = n_obs;
 
                strlcpy_error( obj_name, ids[id_number].obj_name);
                snprintf_err( tbuff, sizeof( tbuff), "Loading '%s'...", obj_name);
@@ -3974,7 +4421,10 @@ int main( int argc, const char **argv)
                if( file_offset < 0L)
                   file_offset = 0L;
                fseek( ifile, file_offset, SEEK_SET);
-               if( obs)
+               if( file_offset)        /* read and discard partial line */
+                  if( !fgets( tbuff, sizeof( tbuff), ifile))
+                     return( -4);
+               if( obs && !appending_observations)
                   unload_observations( obs, n_obs);
 
                strlcpy_error( tbuff, get_find_orb_text( 18));
@@ -3987,6 +4437,13 @@ int main( int argc, const char **argv)
                assert( obs);
                fclose( ifile);
                n_obs = ids[id_number].n_obs;
+               if( appending_observations)
+                  {
+                  obs = (OBSERVE *)realloc( obs, (n_obs + prev_n_obs) * sizeof( OBSERVE));
+                  memcpy( obs + n_obs, prev_obs, prev_n_obs * sizeof( OBSERVE));
+                  n_obs += prev_n_obs;
+                  shellsort_r( obs, n_obs, sizeof( OBSERVE), compare_observations, NULL);
+                  }
                if( !curr_epoch || !epoch_shown || !obs || n_obs < 2)
                   debug_printf( "Curr epoch %f; shown %f; obs %p; %d obs\n",
                                  curr_epoch, epoch_shown, (void *)obs, n_obs);
@@ -4040,6 +4497,7 @@ int main( int argc, const char **argv)
          bad_elements = write_out_elements_to_file( orbit, curr_epoch, epoch_shown,
              obs, n_obs, orbit_constraints, element_precision,
              is_monte_orbit, element_format);
+      saving_elements_for_reuse = false;
       is_monte_orbit = false;
       if( debug_level > 2)
          debug_printf( "elements written\n");
@@ -4051,11 +4509,9 @@ int main( int argc, const char **argv)
       line_no = n_command_lines + 1;
          {
          char *tptr = tbuff;
+         FILE *ofile = fopen_ext( "comments.txt", "tfcw");
 
          clock_line = 0;
-         if( sort_obs_by_code)
-            shellsort_r( obs, n_obs, sizeof( OBSERVE), compare_observations,
-                                                   &sort_obs_by_code);
          generate_obs_text( obs, n_obs, tbuff, sizeof( tbuff));
          if( make_unicode_substitutions)
             {
@@ -4064,8 +4520,6 @@ int main( int argc, const char **argv)
                      /* cvt OEM degree symbol (0xf8) to U+00B0,  in UTF-8: */
                text_search_and_replace( tbuff, "\xf8", "\xc2\xb0 ");
             }
-         if( sort_obs_by_code)
-            shellsort_r( obs, n_obs, sizeof( OBSERVE), compare_observations, NULL);
          while( *tptr)
             {
             size_t i;
@@ -4079,12 +4533,14 @@ int main( int argc, const char **argv)
                add_cmd_area( '%', line_no, (unsigned)( tptr2 - tptr), 5);
             put_colored_text( tptr, line_no++, 0, -1,
                      (tptr[i + 1] ? COLOR_OBS_INFO : COLOR_OBS_INFO | A_UNDERLINE));
+            fprintf( ofile, "%s\n", tptr);
             tptr += i + 1;
             while( *tptr == 10 || *tptr == 13)
                tptr++;
             if( i < 72 && !clock_line)
                clock_line = line_no - 1;
             }
+         fclose( ofile);
          if( debug_level)
             refresh( );
          top_line_orbital_elements = line_no;
@@ -4100,9 +4556,9 @@ int main( int argc, const char **argv)
             unsigned right_side_col = 0;
             const unsigned spacing = 4;  /* allow four columns between */
                         /* 'standard' and 'extended' (right-hand) text */
-            int elem_color = (bad_elements ?
-                              A_BLINK + COLOR_OBS_INFO : COLOR_ORBITAL_ELEMENTS);
 
+            if( bad_elements)
+               top_line_to_blink = line_no + iline;
             while( iline < 20 && fgets_trimmed( tbuff, sizeof( tbuff), ifile))
                {
                if( show_commented_elements && *tbuff == '#')
@@ -4110,7 +4566,7 @@ int main( int argc, const char **argv)
                   if( tbuff[3] != '$' && memcmp( tbuff, "# Find", 6)
                                       && memcmp( tbuff, "# Scor", 6))
                      {
-                     put_colored_text( tbuff + 2, line_no + iline, 0, -1, elem_color);
+                     put_colored_text( tbuff + 2, line_no + iline, 0, -1, COLOR_ORBITAL_ELEMENTS);
                      iline++;
                      }
                   }
@@ -4120,8 +4576,11 @@ int main( int argc, const char **argv)
                   int n_chars_to_highlight = 0;
                   const char *reference = get_environment_ptr( "REFERENCE");
 
-                  if( !memcmp( tbuff, "IMPACT", 6))
-                     elem_color = COLOR_ATTENTION + A_BLINK;
+                  if( !memcmp( tbuff, "IMPACT", 6) && !top_line_to_blink)
+                     {
+                     top_line_to_blink = line_no + iline;
+                     bottom_line_to_blink = top_line_to_blink + 1;
+                     }
                   if( !memcmp( tbuff, "Epoch", 5))
                      add_cmd_area( 'e', line_no + iline, 0, 5);
                   if( !memcmp( tbuff + 3, "Peri", 4))
@@ -4130,7 +4589,9 @@ int main( int argc, const char **argv)
                   if( tptr)
                      add_cmd_area( 't', line_no + iline,
                                           (int)( tptr - tbuff), 20);
-                  tptr = strstr( tbuff, "(J2000 ");
+                  tptr = strstr( tbuff, "(J2000");
+                  if( !tptr)
+                     tptr = strstr( tbuff, "(body fr");
                   if( tptr)
                      add_cmd_area( ALT_N, line_no + iline,
                                           (int)( tptr - tbuff) - 3, 20);
@@ -4156,7 +4617,7 @@ int main( int argc, const char **argv)
                      text_search_and_replace( tbuff, " +/- ", " \xc2\xb1 ");
                      text_search_and_replace( tbuff, "^2", "\xc2\xb2");
                      }
-                  put_colored_text( tbuff, line_no + iline, 0, -1, elem_color);
+                  put_colored_text( tbuff, line_no + iline, 0, -1, COLOR_ORBITAL_ELEMENTS);
                   if( right_side_col < (unsigned)strlen( tbuff) + spacing)
                      right_side_col = (unsigned)strlen( tbuff) + spacing;
                   tptr = strstr( tbuff, "Earth MOID:");
@@ -4193,11 +4654,13 @@ int main( int argc, const char **argv)
                        || !memcmp( tbuff + 2, "MOID", 4))
                         {
                         put_colored_text( tbuff + 2, line_no + right_side_line,
-                                right_side_col, -1, elem_color);
+                                right_side_col, -1, COLOR_ORBITAL_ELEMENTS);
                         right_side_line++;
                         }
                }
             line_no += iline;
+            if( bad_elements)
+               bottom_line_to_blink = line_no;
             fclose( ifile);
             }
          if( debug_level)
@@ -4242,7 +4705,7 @@ int main( int argc, const char **argv)
          for( i = 0; i < n_mpc_codes; i++)
             mpc_color_codes[i].score = 0;
          show_observations( obs, top_obs_shown, top_line_residuals,
-                                 residual_format, n_obs_shown);
+                                 residual_format, n_obs_shown, n_obs);
          show_station_info( obs, n_obs,
                      line_no, curr_obs, list_codes);
 
@@ -4283,11 +4746,8 @@ int main( int argc, const char **argv)
       add_off_on = -1;
       move( getmaxy( stdscr) - 1, 0);
       if( c == AUTO_REPEATING)
-         if( curses_kbhit( ) != ERR)
-            {
-            extended_getch( );
-            c = 0;
-            }
+         if( (i = curses_kbhit_without_mouse( )) != ERR)
+            c = 0;                        /* stopping a Monte Carlo run */
       if( c != AUTO_REPEATING)
          {
          int n_ticks_elapsed = 0, n_ticks_mouse_stationary = 0;
@@ -4299,7 +4759,12 @@ int main( int argc, const char **argv)
                {
                c = extended_getch( );
                if( c == KEY_MOUSE)
+                  {
                   get_mouse_data( (int *)&mouse_x, (int *)&mouse_y, (int *)&mouse_z, &button);
+                  if( (button & BUTTON4_PRESSED) || button5_pressed)  /* 'wheel up'/'dn' */
+                     if( curses_kbhit( ) == KEY_MOUSE)
+                        c = 0;      /* avoid duplicated wheel mouse events */
+                  }
                }
             else
                {
@@ -4311,6 +4776,13 @@ int main( int argc, const char **argv)
                   tbuff[9] = '\0';
                   put_colored_text( tbuff, clock_line,
                                  getmaxx( stdscr) - 9, 9, COLOR_OBS_INFO);
+                  for( i = top_line_to_blink; i < bottom_line_to_blink; i++)
+                     {
+                     attr_t attrib = (t0 % 3) ? A_NORMAL : A_REVERSE;
+                     short color = (t0 % 3 == 2) ? COLOR_OBS_INFO : COLOR_ORBITAL_ELEMENTS;
+
+                     mvchgat( i, 0, getmaxx( stdscr), attrib, color, 0);
+                     }
                   }
                napms( 50);      /* a 'tick' is 50 milliseconds long */
                n_ticks_elapsed++;
@@ -4320,6 +4792,7 @@ int main( int argc, const char **argv)
                   {
                   size_t index;
                   const int cmd = show_hint( mouse_x, mouse_y, &index);
+                  int col1 = 0, col2 = 0;
 
                   if( cmd == -1)
                      {
@@ -4343,15 +4816,68 @@ int main( int argc, const char **argv)
                            buff[4] = '\0';
                            make_observatory_info_text( tbuff, sizeof( tbuff),
                                                        obs, n_obs, buff + 1);
+                           col2 = 5;
                            }
                         }
-#ifdef NOT_USED_YET                       /* To Do: show some info about this */
-                     else if( i >= 0)     /* observation.  Dunno what yet.    */
-                        snprintf_err( tbuff, 80, "line %d, obs %d",
-                                       i, i + top_obs_shown);
-#endif
+                     else if( i >= 0)
+                        {
+                        i += top_obs_shown;
+                        if( mouse_x < 3)
+                           *tbuff = '\0';       /* nothing to do */
+                        else if( mouse_x < 20)
+                           {
+                           double dt, utc;
+
+                           utc = utc_from_td( obs[i].jd, NULL);
+                           dt = current_jd( ) - utc;
+
+                           full_ctime( tbuff, utc, CALENDAR_JULIAN_GREGORIAN
+                                      | FULL_CTIME_YMD | FULL_CTIME_LEADING_ZEROES
+                                      | FULL_CTIME_MICRODAYS);
+                           strcat( tbuff, " = ");
+                           full_ctime( tbuff + strlen( tbuff), utc,
+                                      FULL_CTIME_TIME_ONLY | FULL_CTIME_HUNDREDTH_SEC);
+                           if( dt < 1.)
+                              snprintf_append( tbuff, sizeof( tbuff), "\n%.2f hours ago", dt * 24.);
+                           else if( dt < 7.)
+                              snprintf_append( tbuff, sizeof( tbuff), "\n%.2f days ago", dt);
+                           if( utc > 2400001.0)
+                              snprintf_append( tbuff, sizeof( tbuff), "\nMJD %.6f", utc - 2400000.5);
+                           else
+                              snprintf_append( tbuff, sizeof( tbuff), "\nJD %.6f", utc);
+                           col1 = 3;
+                           col2 = 20;
+                           }
+                        else if( mouse_x < 44)
+                           {
+                           char formatted[82];
+
+                           recreate_observation_line( formatted, obs + i, 3 << 14);   /* HH MM SS.s */
+                           formatted[56] = '\0';
+                           strlcpy_error( tbuff, formatted + 32);
+                           strlcat_error( tbuff, "\n");
+                           recreate_observation_line( formatted, obs + i, 1 << 14);   /* decimal degrees */
+                           formatted[56] = '\0';
+                           strlcat_error( tbuff, formatted + 32);
+                           col1 = 20;
+                           col2 = 44;
+                           }
+                        else if( mouse_x < 52)
+                           {
+                           col1 = 44;
+                           col2 = 52;
+                           create_sigma_hover_text( tbuff, sizeof( tbuff), obs + i);
+                           }
+                        if( mouse_x >= 53 && mouse_x < 59 && obs[i].computed_mag != BLANK_MAG)
+                           {
+                           snprintf_err( tbuff, sizeof( tbuff), "computed mag %.2f",
+                                                            obs[i].computed_mag);
+                           col1 = 53;
+                           col2 = 59;
+                           }
+                        }
                      if( *tbuff)
-                        show_hint_text( mouse_x, mouse_y, 0, 0, 0, tbuff);
+                        show_hint_text( mouse_x, mouse_y, mouse_y, col1, col2 - col1, tbuff);
                      }
                   }
                }
@@ -4360,7 +4886,9 @@ int main( int argc, const char **argv)
             }
          auto_repeat_full_improvement = 0;
          }
-
+      for( i = 0; key_remaps[i]; i += 2)
+         if( c == key_remaps[i])
+            c = key_remaps[i + 1];
       if( (button & BUTTON4_PRESSED) || button5_pressed)  /* 'wheel up'/'dn' */
          {
          mouse_wheel_motion = ((button & BUTTON_CTRL) ? 5 : 1);
@@ -4374,8 +4902,16 @@ int main( int argc, const char **argv)
       if( c == KEY_MOUSE && !(button & REPORT_MOUSE_POSITION))
          {
          c = find_command_area( mouse_x, mouse_y, NULL);
+         if( c == KEY_OBSCODE_CLICKED)
+            {
+            curr_obs = top_obs_shown + (mouse_y - top_line_residuals);
+            c = ( button & (BUTTON1_RELEASED | BUTTON1_CLICKED) ? 'T' : 'X');
+            }
          if( c == ALT_X && mouse_wheel_motion)
             c = (mouse_wheel_motion < 0 ? KEY_F( 4) : KEY_F( 5));
+         if( c == 't' && mouse_wheel_motion)
+            c = (mouse_wheel_motion < 0 ? KEY_CYCLE_RESID_DISPLAY_UP
+                                        : KEY_CYCLE_RESID_DISPLAY_DN);
          if( c < 0)      /* informational hint text; no command */
             c = KEY_MOUSE;
          }
@@ -4674,39 +5210,20 @@ int main( int argc, const char **argv)
             add_off_on = use_sigmas;
             }
             break;
-         case KEY_F(1):      /* turn on/off all obs prior to curr one */
-         case ALT_U:         /* Used because F1 doesn't work in X     */
-         case CTRL( 'W'):    /* Used because Alt-U doesn't work on Macs */
+#ifdef KEY_SUP
+         case KEY_SUP:
+#endif
+         case KEY_SR:
             obs[curr_obs].is_included ^= 1;
             for( i = 0; i < curr_obs; i++)
                obs[i].is_included = obs[curr_obs].is_included;
             strlcpy_error( message_to_user, get_find_orb_text( 20));
             add_off_on = obs[curr_obs].is_included;
             break;
-         case KEY_F(16):     /* Shift-F4:  select another object to add in */
-            if( (i = select_object_in_file( ids, n_ids)) >= 0)
-               {
-               FILE *ifile = fopen( ifilename, "rb");
-
-               obs = add_observations( ifile, obs, ids + i, &n_obs);
-               if( debug_level)
-                  printf( "Now have %d obs\n", n_obs);
-               if( mpc_color_codes)
-                  free( mpc_color_codes);
-               if( max_mpc_color_codes)
-                  mpc_color_codes = find_mpc_color_codes( n_obs, obs,
-                             max_mpc_color_codes);
-               if( debug_level)
-                  debug_printf( "got color codes; ");
-               for( i = 0; i < n_obs - 1 && !obs[i].is_included; i++)
-                  ;
-               curr_obs = i;
-               set_locs( orbit, curr_epoch, obs, n_obs);
-               update_element_display = 1;
-               clear( );
-               }
-            break;
-         case KEY_F(2):          /* turn on/off all obs after curr one */
+#ifdef KEY_SDOWN
+         case KEY_SDOWN:
+#endif
+         case KEY_SF:            /* turn on/off all obs after curr one */
             obs[curr_obs].is_included ^= 1;
             for( i = curr_obs; i < n_obs; i++)
                obs[i].is_included = obs[curr_obs].is_included;
@@ -4751,8 +5268,29 @@ int main( int argc, const char **argv)
          case '^':
             non_grav_menu( message_to_user);
             if( *message_to_user)      /* new force model selected */
+               {
+               extern int force_model;
+               char *delta_v = NULL;
+
                for( i = 6; i < n_orbit_params; i++)
                   orbit[i] = 0.;
+               if( force_model == FORCE_MODEL_DELTA_V)
+                  {        /* we need a starting estimate of the maneuver time */
+                  if( !inquire( get_find_orb_text( 2099), tbuff, sizeof( tbuff),
+                            COLOR_DEFAULT_INQUIRY) && *tbuff)
+                     {
+                     delta_v = strstr( tbuff, "v=");
+                     if( delta_v)
+                        *delta_v = '\0';
+                     orbit[9] = get_time_from_string( obs->jd, tbuff,
+                             FULL_CTIME_YMD | CALENDAR_JULIAN_GREGORIAN, NULL);
+                     }
+                  if( orbit[9] < obs->jd || orbit[9] > obs[n_obs - 1].jd)
+                     force_model = FORCE_MODEL_NO_NONGRAVS;
+                  else if( delta_v)
+                     sscanf( delta_v + 2, "%lf,%lf,%lf", orbit + 6, orbit + 7, orbit + 8);
+                  }
+               }
             break;
 #ifndef _WIN32
          case KEY_F(8):     /* show original screens */
@@ -4866,14 +5404,14 @@ int main( int argc, const char **argv)
 
                set_statistical_ranging( c == CTRL( 'A'));
                c = '|';
-               if( !inquire( "Gaussian noise level (arcsec): ",
+               if( !inquire( "Gaussian noise level (sigmas): ",
                              tbuff, sizeof( tbuff), COLOR_DEFAULT_INQUIRY))
                   {
-                  noise_in_arcseconds = atof( tbuff);
-                  if( noise_in_arcseconds)
+                  noise_in_sigmas = atof( tbuff);
+                  if( noise_in_sigmas)
                      {
                      max_monte_rms =
-                              sqrt( noise_in_arcseconds * noise_in_arcseconds
+                              sqrt( noise_in_sigmas * noise_in_sigmas
                                            + rms * rms);
                      c = AUTO_REPEATING;
                      }
@@ -4881,11 +5419,14 @@ int main( int argc, const char **argv)
                }
             if( c == AUTO_REPEATING)
                stored_ra_decs =
-                   add_gaussian_noise_to_obs( n_obs, obs, noise_in_arcseconds);
+                   add_gaussian_noise_to_obs( n_obs, obs, noise_in_sigmas);
             push_orbit( curr_epoch, orbit);
             if( c == AUTO_REPEATING && using_sr)
                {
-               find_nth_sr_orbit( orbit, obs, n_obs, monte_carlo_object_count);
+               sr_orbit_t sr;
+
+               find_nth_sr_orbit( &sr, obs, n_obs, monte_carlo_object_count);
+               memcpy( orbit, sr.orbit, 6 * sizeof( double));
                adjust_herget_results( obs, n_obs, orbit);
                         /* epoch is that of first included observation: */
                get_epoch_range_of_included_obs( obs, n_obs, &curr_epoch, NULL);
@@ -4897,7 +5438,6 @@ int main( int argc, const char **argv)
 //             const double mid_epoch = curr_epoch;
 //             const double mid_epoch = epoch_shown;
 
-//             debug_printf( "From %.7f to %.7f\n", curr_epoch, mid_epoch);
                memcpy( saved_orbit, orbit, n_orbit_params * sizeof( double));
                integrate_orbit( orbit, curr_epoch, mid_epoch);
                         /* Only request sigmas for i=1 (last pass... */
@@ -4951,7 +5491,7 @@ int main( int argc, const char **argv)
                   {
                   elem.gm = get_planet_mass( planet_orbiting);
                   calc_classical_elements( &elem, rel_orbit, epoch_shown, 1);
-                  add_monte_orbit( monte_data, &elem, monte_carlo_object_count);
+                  add_monte_orbit( monte_data, &elem, orbit2, monte_carlo_object_count);
                   }
                if( monte_carlo_object_count > 3)
                   {
@@ -4972,6 +5512,8 @@ int main( int argc, const char **argv)
                {
                strlcpy_error( message_to_user,
                                (err ? "Full step FAILED" : "Full step taken"));
+               if( curses_kbhit_without_mouse( ) != ERR)
+                  strlcpy_error( message_to_user, "User interrupted step");
                snprintf_append( message_to_user, sizeof( message_to_user), "(%.5f s)",
                       (double)( clock( ) - t0) / (double)CLOCKS_PER_SEC);
                }
@@ -5099,6 +5641,7 @@ int main( int argc, const char **argv)
                strlcpy_error( orbit_constraints, "e=1,i=72,O=72");
             if( !strcmp( orbit_constraints, "Ma"))
                strlcpy_error( orbit_constraints, "e=1,i=26,O=81"); /* q=.049? */
+            compute_effective_solar_multiplier( orbit_constraints);
             break;
          case 'm': case 'M':
             create_obs_file( obs, n_obs, 0, residual_format);
@@ -5106,11 +5649,14 @@ int main( int argc, const char **argv)
                            ifilename, residual_format);
             break;
          case 'o':             /* select a new file */
+         case 'O':             /* append observations */
             get_new_file = get_new_object = true;
+            appending_observations = (c == 'O');
             *ifilename = '\0';
             break;
          case 'n': case 'N':   /* select a new object from the input file */
             get_new_object = true;
+            appending_observations = (c == 'N');
             update_element_display = 1;
             pop_all_orbits( );
             break;
@@ -5161,39 +5707,62 @@ int main( int argc, const char **argv)
          case ALT_F:
             {
             extern double **eigenvects;
-            const double n_sigmas = improve_along_lov( orbit, curr_epoch,
+
+            if( eigenvects && eigenvects[0])
+               {
+               const double n_sigmas = improve_along_lov( orbit, curr_epoch,
                      eigenvects[0], n_orbit_params, n_obs, obs);
 
-            snprintf( message_to_user, sizeof( message_to_user),
+               snprintf( message_to_user, sizeof( message_to_user),
                                        "Adjusted by %f sigmas", n_sigmas);
-            update_element_display = 1;
+               update_element_display = 1;
+               }
+            else
+               strlcpy_error( message_to_user, "No LOV along which to improve");
             }
             break;
          case CTRL( 'D'):
             if( !inquire( "Number SR orbits: ", tbuff, sizeof( tbuff),
-                            COLOR_DEFAULT_INQUIRY) && atoi( tbuff))
+                            COLOR_DEFAULT_INQUIRY))
                {
-               const unsigned max_orbits = atoi( tbuff);
-               double *orbits = (double *)calloc( max_orbits, 7 * sizeof( double));
-               int n_found;
+               unsigned max_orbits, n_improvements = 0;
 
-               for( i = 0; i < n_obs - 1 && !obs[i].is_included; i++)
-                  ;
-               n_found = get_sr_orbits( orbits, obs + i, n_obs - i, 0, max_orbits,
-                        86400., 1., 1);
-               snprintf_err( message_to_user, sizeof( message_to_user),
-                                "%d orbits computed: best score=%.3f\n",
-                                n_found, orbits[6]);
-               if( n_found)
+               if( sscanf( tbuff, "%u,%u", &max_orbits, &n_improvements))
                   {
-                  push_orbit( curr_epoch, orbit);
-                  memcpy( orbit, orbits, 6 * sizeof( double));
-                  curr_epoch = obs[i].jd;
-                  update_element_display = 1;
-                  set_locs( orbit, curr_epoch, obs, n_obs);
-                  show_a_file( "sr_elems.txt", 0);
+                  sr_orbit_t *orbits = (sr_orbit_t *)calloc( max_orbits, sizeof( sr_orbit_t));
+                  int n_found;
+
+                  for( i = 0; i < n_obs - 1 && !obs[i].is_included; i++)
+                     ;
+                  n_found = get_sr_orbits( orbits, obs + i, n_obs - i, 0, max_orbits,
+                           86400., 1., 1);
+                  snprintf_err( message_to_user, sizeof( message_to_user),
+                                   "%d orbits computed: best score=%.3f\n",
+                                   n_found, orbits[0].score);
+                  debug_printf( "%d found, will do %u improvements\n",
+                              n_found, n_improvements);
+                  if( n_found > 0)
+                     {
+                     while( n_improvements--)
+                        improve_sr_orbits( orbits, obs + i,
+                                    n_obs - i, n_found, 1., 0);
+                     curr_epoch = obs[i].jd;
+                     for( i = 0; i < n_found; i++)
+                        if( orbits[i].score < orbits[0].score)
+                           {
+                           const sr_orbit_t torbit = orbits[0];
+
+                           orbits[0] = orbits[i];
+                           orbits[i] = torbit;
+                           }
+                     push_orbit( curr_epoch, orbit);
+                     memcpy( orbit, orbits[0].orbit, 6 * sizeof( double));
+                     update_element_display = 1;
+                     set_locs( orbit, curr_epoch, obs, n_obs);
+                     show_a_file( "sr_elems.txt", 0);
+                     }
+                  free( orbits);
                   }
-               free( orbits);
                }
             break;
          case CTRL( 'R'):
@@ -5296,19 +5865,38 @@ int main( int argc, const char **argv)
 //                               orbit2[0], orbit2[1], orbit2[2]);
 //             debug_printf( "%20.14f %20.14f %20.14f\n",
 //                               orbit2[3], orbit2[4], orbit2[5]);
-               store_solution( obs, n_obs, orbit2, epoch_shown,
-                                          perturbers);
                }
             }
             break;
-         case 't': case 'T':
+         case 't':
             residual_format = resid_format_menu( message_to_user, residual_format);
             if( *message_to_user)
                update_element_display = 1;
             break;
-         case 127:           /* backspace takes on different values */
-         case KEY_BACKSPACE: /* on PDCurses,  ncurses,  etc.        */
-         case 8:
+         case 'T':
+            snprintf_err( message_to_user, sizeof( message_to_user),
+                                       "%u observation(s) in tracklet",
+                      select_tracklet( obs, n_obs, curr_obs));  /* orb_func.cpp */
+            break;
+         case KEY_CYCLE_RESID_DISPLAY_UP:
+            if( residual_format & RESIDUAL_FORMAT_NORMALIZED)
+                residual_format ^= RESIDUAL_FORMAT_NORMALIZED;
+            else if( residual_format & RESIDUAL_FORMAT_TIME_RESIDS)
+                residual_format ^= (RESIDUAL_FORMAT_NORMALIZED | RESIDUAL_FORMAT_TIME_RESIDS);
+            else
+                residual_format ^= RESIDUAL_FORMAT_TIME_RESIDS;
+            update_element_display = 1;
+            break;
+         case KEY_CYCLE_RESID_DISPLAY_DN:
+            if( residual_format & RESIDUAL_FORMAT_NORMALIZED)
+                residual_format ^= (RESIDUAL_FORMAT_NORMALIZED | RESIDUAL_FORMAT_TIME_RESIDS);
+            else if( residual_format & RESIDUAL_FORMAT_TIME_RESIDS)
+                residual_format ^= RESIDUAL_FORMAT_TIME_RESIDS;
+            else
+                residual_format ^= RESIDUAL_FORMAT_NORMALIZED;
+            update_element_display = 1;
+            break;
+         case KEY_BACKSPACE:
             if( !pop_orbit( &curr_epoch, orbit))
                {
                strlcpy_error( message_to_user, "Last orbit operation undone");
@@ -5333,8 +5921,11 @@ int main( int argc, const char **argv)
                   vaisala_dist /= AU_IN_KM;        /* to be in kilometers */
                if( vaisala_dist)
                   {
-                  curr_epoch = obs->jd;
-                  find_vaisala_orbit( orbit, obs, obs + n_obs - 1, vaisala_dist);
+                  int idx1, idx2;
+
+                  get_idx1_and_idx2( n_obs, obs, &idx1, &idx2);
+                  curr_epoch = obs[idx1].jd;
+                  find_vaisala_orbit( orbit, obs + idx1, obs + idx2, vaisala_dist);
                   update_element_display = 1;
                   set_locs( orbit, curr_epoch, obs, n_obs);
                   }
@@ -5450,13 +6041,29 @@ int main( int argc, const char **argv)
             strlcpy_error( message_to_user, "Worst observation found");
             }
             break;
-         case 'x': case 'X':
+         case 'X':         /* toggle tracklet */
+            for( i = 0; i < n_obs; i++)
+               if( obs[i].flags & OBS_IS_SELECTED)
+                  obs[i].flags |= OBS_TEMP_USE_FLAG;
+               else
+                  obs[i].flags &= ~OBS_TEMP_USE_FLAG;
+            select_tracklet( obs, n_obs, curr_obs);  /* orb_func.cpp */
+                     /* FALLTHRU */
+         case 'x':
             {
             unsigned n_found;
 
             add_off_on = toggle_selected_observations( obs, n_obs, &n_found);
             snprintf_err( message_to_user, sizeof( message_to_user),
                                        "%u observation(s) toggled", n_found);
+            if( c == 'X')     /* restore original selection */
+               for( i = 0; i < n_obs; i++)
+                  {
+                  if( obs[i].flags & OBS_TEMP_USE_FLAG)
+                     obs[i].flags |= OBS_IS_SELECTED;
+                  else
+                     obs[i].flags &= ~OBS_IS_SELECTED;
+                  }
             }
             break;
          case 'y': case 'Y':
@@ -5486,6 +6093,8 @@ int main( int argc, const char **argv)
                               sqrt( delta_squared) * AU_IN_KM,
                               (unsigned long)( t0 / one_billion),
                               (unsigned long)( t0 % one_billion));
+            snprintf_append( message_to_user, sizeof( message_to_user),
+                     " JD %.4f to %.4f", curr_epoch, curr_epoch + atof( tbuff));
             }
             break;
          case ALT_D:
@@ -5617,15 +6226,6 @@ int main( int argc, const char **argv)
                                tbuff, sizeof( tbuff), COLOR_DEFAULT_INQUIRY))
                show_a_file( tbuff, 0);
             break;
-         case '`':
-            {
-            default_comet_magnitude_type =
-                        'N' + 'T' - default_comet_magnitude_type;
-            if( default_comet_magnitude_type == 'N')
-               strlcpy_error( message_to_user, "Using nuclear mags for comets");
-            else
-               strlcpy_error( message_to_user, "Using total mags for comets");
-            }
          case KEY_MOUSE:   /* already handled above */
             break;
          case 'b':
@@ -5686,46 +6286,14 @@ int main( int argc, const char **argv)
          case ',':
             show_a_file( "debug.txt", 0);
             break;
-         case '.':
+         case KEY_F( 15):        /* shift-f3 : show Curses info */
             {
-            int eop_range[3];
-            const int debias_version = find_fcct_biases( 1., 1., 0,
-                           0., NULL, NULL);
-
             snprintf_err( tbuff, sizeof( tbuff), "%s\n%s\n%s\n",
                                  longname( ), termname( ), curses_version( ));
             snprintf_append( tbuff, sizeof( tbuff),
                         "%d pairs of %d colors\n", COLOR_PAIRS, COLORS);
             if( can_change_color( ))
                strlcat_error( tbuff, "Colors are changeable\n");
-            snprintf_append( tbuff, sizeof( tbuff), "Find_Orb version %s\n",
-                             find_orb_version_jd( NULL));
-            format_jpl_ephemeris_info( tbuff + strlen( tbuff) - 1);
-            load_earth_orientation_params( NULL, eop_range);
-            if( eop_range[0])
-               {
-               char date_buff[3][50];
-
-               for( i = 0; i < 3; i++)
-                  full_ctime( date_buff[i], 2400000.5 + (double)eop_range[i],
-                        FULL_CTIME_DATE_ONLY | FULL_CTIME_YMD);
-               snprintf_append( tbuff, sizeof( tbuff),
-                        "EOPs run from %s to %s\n(%s with extrapolation)\n",
-                                 date_buff[0], date_buff[2], date_buff[1]);
-               }
-            if( debias_version > 2000)
-               {
-               const char *ver = "?unknown?\n";
-
-               strlcat_error( tbuff, "Astrometric debiasing version ");
-               if( debias_version == 2018)
-                  ver = "EFCC18\n";
-               else if( debias_version == 2014)
-                  ver = "FCCT14\n";
-               strlcat_error( tbuff, ver);
-               }
-            else
-               strlcat_error( tbuff, "No astrometric debiasing applied\n");
             inquire( tbuff, NULL, 0, COLOR_DEFAULT_INQUIRY);
             }
             break;
@@ -5828,19 +6396,6 @@ int main( int argc, const char **argv)
                            (c == ALT_T ? "all" : "selected"));
                   }
             break;
-         case KEY_F(17):    /* shift-f5 */
-            if( !inquire( "Enter element filename: ", tbuff, sizeof( tbuff),
-                                COLOR_DEFAULT_INQUIRY) && *tbuff)
-               {
-               const double rval = get_elements( tbuff, orbit);
-
-               if( rval)
-                  {
-                  curr_epoch = epoch_shown = rval;
-                  update_element_display = 1;
-                  }
-               }
-            break;
          case KEY_F(23):    /* shift-f11: ephemeride-less pseudo-MPEC */
             {
             extern const char *ephemeris_filename;
@@ -5850,8 +6405,6 @@ int main( int argc, const char **argv)
 
             memcpy( orbit2, orbit, n_orbit_params * sizeof( double));
             integrate_orbit( orbit2, curr_epoch, epoch_shown);
-            store_solution( obs, n_obs, orbit2, epoch_shown,
-                                          perturbers);
             create_obs_file( obs, n_obs, 0, residual_format);
 #ifdef _WIN32                /* MS is different. */
             _unlink( get_file_name( tbuff, ephemeris_filename));
@@ -5891,7 +6444,7 @@ int main( int argc, const char **argv)
                else
                   {
                   const double jd = get_time_from_string( obs[curr_obs].jd,
-                                 tbuff, 0, NULL);
+                                 tbuff, CALENDAR_JULIAN_GREGORIAN, NULL);
 
                   if( jd)
                      for( curr_obs = 0; curr_obs < n_obs &&
@@ -5996,9 +6549,23 @@ int main( int argc, const char **argv)
             update_element_display = 1;
             break;
          case ALT_G:
-            orbital_monte_carlo( orbit, obs, n_obs, curr_epoch, epoch_shown);
-            update_element_display = 1;
-            strlcpy_error( message_to_user, "Orbital MC generated");
+            if( !inquire( get_find_orb_text( 2101),
+                               tbuff, sizeof( tbuff), COLOR_DEFAULT_INQUIRY))
+               {
+               const unsigned new_n_orbits = atoi( tbuff);
+
+               if( new_n_orbits)
+                  {
+                  extern unsigned max_n_sr_orbits;
+
+                  max_n_sr_orbits = new_n_orbits;
+                  reset_sr_orbits( );
+                  orbital_monte_carlo( orbit, obs, n_obs, curr_epoch, epoch_shown);
+                  update_element_display = 1;
+                  strlcpy_error( message_to_user, "Orbital MC generated");
+                  }
+               }
+            break;
             break;
          case ALT_I:
             {
@@ -6015,9 +6582,23 @@ int main( int argc, const char **argv)
             {
             extern int sigmas_in_columns_57_to_65;
 
-            sigmas_in_columns_57_to_65 ^= 1;
             strlcpy_error( message_to_user, "Sigma display");
-            add_off_on = sigmas_in_columns_57_to_65;
+            if( residual_format & RESIDUAL_FORMAT_SHOW_DESIGS)
+               {
+               residual_format ^= RESIDUAL_FORMAT_SHOW_DESIGS;
+               sigmas_in_columns_57_to_65 = 0;
+               }
+            else
+               {
+               sigmas_in_columns_57_to_65 ^= 1;
+               if( !sigmas_in_columns_57_to_65)
+                  {
+                  residual_format |= RESIDUAL_FORMAT_SHOW_DESIGS;
+                  strlcpy_error( message_to_user, "Showing packed desigs in obs area");
+                  }
+               }
+            if( message_to_user[1] == 'i')
+               add_off_on = sigmas_in_columns_57_to_65;
             }
             break;
          case ALT_Q:
@@ -6035,9 +6616,6 @@ int main( int argc, const char **argv)
             sort_obs_by_code = !sort_obs_by_code;
             strlcpy_error( message_to_user, sort_obs_by_code ?
                      "Obs sorted by MPC code" : "Obs sorted by date");
-            break;
-         case ALT_A:
-            residual_format ^= RESIDUAL_FORMAT_SHOW_DESIGS;
             break;
          case ALT_R:
             if( !inquire( get_find_orb_text( 2038),
@@ -6088,11 +6666,9 @@ int main( int argc, const char **argv)
             break;
          case CTRL( 'X'):
             {
-            extern bool saving_elements_for_reuse;
-
-            saving_elements_for_reuse ^= 1;
-            strlcpy_error( message_to_user, "Saving elements for re-use is");
-            add_off_on = saving_elements_for_reuse;
+            saving_elements_for_reuse = true;
+            strlcpy_error( message_to_user, "Elements saved for re-use");
+            update_element_display = 1;
             }
             break;
          case CTRL( 'Y'):
@@ -6109,11 +6685,7 @@ int main( int argc, const char **argv)
                single_obs_selected = true;
                }
             break;
-#ifdef CTL_DOWN        /* PDCurses uses this #define */
-         case CTL_DOWN:
-#else                  /* ncurses uses this #define */
          case CTL_DN:
-#endif
             if( curr_obs < n_obs - 1)
                {
                curr_obs++;
@@ -6141,44 +6713,118 @@ int main( int argc, const char **argv)
             }
             break;
          case 'c': case 'C':
+            show_calendar( );
+            break;
+         case '.':
+            show_splash_screen_and_wait( );     /* just to test */
+            break;
+         case ALT_Y:
             {
-            FILE *ifile = fopen_ext( "calend.txt", "clrb");
+            char object_name[80];
+            double unused_max_resid;
+            ELEMENTS elems;
 
-            if( ifile)
-               fclose( ifile);
-            show_a_file( (ifile ? "calend.txt" : "calendar.txt"), SHOW_FILE_IS_CALENDAR);
+            get_object_name( object_name, obs->packed_id);
+            if( get_orbit_from_mpcorb_sof( object_name, orbit,
+                               &elems, 0.1, &unused_max_resid))
+               {
+               curr_epoch = epoch_shown = elems.epoch;
+               update_element_display = 1;
+               set_locs( orbit, curr_epoch, obs, n_obs);
+               strlcpy_error( message_to_user, "Elements copied from 'mpcorb.sof'");
+               }
+            else
+               snprintf_err( message_to_user, sizeof( message_to_user),
+                       "Didn't find elems for '%s' in 'mpcorb.sof'", object_name);
             }
             break;
-         case KEY_F( 15):        /* shift-f3 */
-            show_splash_screen( );     /* just to test */
-            extended_getch( );
+         case 'j': case 'J':
+            {
+            extern int object_type;
+            const char *text;
+
+            if( object_type == OBJECT_TYPE_ASTEROID)
+               {
+               object_type = OBJECT_TYPE_COMET;
+               default_comet_magnitude_type = 'T';
+               text = "comet total";
+               }
+            else if( default_comet_magnitude_type == 'T')
+               {
+               default_comet_magnitude_type = 'N';
+               text = "comet nuclear";
+               }
+            else
+               {
+               object_type = OBJECT_TYPE_ASTEROID;
+               text = "asteroid";
+               }
+            calc_absolute_magnitude( obs, n_obs);
+            snprintf_err( message_to_user, sizeof( message_to_user),
+                       "Using %s mag model", text);
+            update_element_display = 1;
+            }
             break;
          case '\\':
-         case 'j': case 'J':
-         case 'O':
-         case ';': case ']':
+            if( !inquire( "Enter Kreutz perihelion distance:",
+                       tbuff, sizeof( tbuff), COLOR_DEFAULT_INQUIRY) && *tbuff)
+               {
+               const double r = find_kreutz_orbit( obs + curr_obs, 1, orbit, atof( tbuff));
+
+               snprintf_err( message_to_user, sizeof( message_to_user),
+                       "Kreutz r = %f AU", r);
+               curr_epoch = obs[curr_obs].jd - r / AU_PER_DAY;
+               set_locs( orbit, curr_epoch, obs, n_obs);
+               update_element_display = 1;
+               }
+            break;
+         case KEY_DC:            /* 'delete' selected observations */
+            {
+            int j;
+
+            for( i = 0, j = 0; i < n_obs; i++)
+               if( !(obs[i].flags & OBS_IS_SELECTED))
+                  obs[j++] = obs[i];
+               else if( i < curr_obs)
+                     curr_obs--;
+            if( n_obs > 0)
+               {
+               n_obs = j;
+               if( curr_obs >= n_obs)
+                  curr_obs = n_obs - 1;
+               }
+            obs[curr_obs].flags |= OBS_IS_SELECTED;
+            snprintf_err( message_to_user, sizeof( message_to_user),
+                     "%d selected observations removed", i - j);
+            update_element_display = 1;
+            }
+            break;
+         case ';': case ']': case '`':
          case CTRL( 'E'): case CTRL( 'J'): case CTRL( 'L'):
-         case CTRL( 'N'): case CTRL( 'O'): case CTRL( 'T'):
-         case CTRL( 'V'):
+         case CTRL( 'N'): case CTRL( 'O'): case CTRL( 'Q'):
+         case CTRL( 'S'): case CTRL( 'T'): case CTRL( 'U'):
+         case CTRL( 'V'): case CTRL( 'W'): case CTRL( 'Z'):
          case CTRL( '_'): case CTRL( ']'):
-         case ALT_Y:
+         case ALT_A:
          case CTL_LEFT: case CTL_RIGHT:
+         case KEY_F( 1):
+         case KEY_F( 2):
          case KEY_F( 13):        /* shift-f1 */
          case KEY_F( 14):        /* shift-f2 */
+         case KEY_F( 16):        /* shift-f4 */
          case KEY_F( 24):        /* shift-f12 */
-         case KEY_DC:            /* delete key */
          case CTL_DEL:
          case ALT_DEL:
          case KEY_B2:            /* central key on numeric keypad */
          case KEY_ENTER:         /* on numeric keypad */
          case ALT_UP:
          case ALT_LEFT: case ALT_RIGHT:
+         case KEY_SRIGHT: case KEY_SLEFT:
 #ifdef __PDCURSES__
          case PADPLUS: case PADMINUS: case PADSLASH:
-         case ALT_DOWN:          /* PDCurses uses this #define... */
-#else
-         case ALT_DN:            /* ...and ncurses uses this one */
 #endif
+         case ALT_DOWN:
+         case KEY_F(17):    /* shift-f5 */
          default:
             debug_printf( "Key %d hit\n", c);
             show_a_file( "dos_help.txt", 0);
@@ -6207,7 +6853,7 @@ Shutdown_program:
    set_environment_ptr( "CONSOLE_OPTS", tbuff);
    store_defaults( ephemeris_output_options, element_format,
          element_precision, max_residual_for_filtering,
-         noise_in_arcseconds);
+         noise_in_sigmas);
    set_environment_ptr( "EPHEM_START", ephemeris_start);
    snprintf_err( tbuff, sizeof( tbuff), "%d", n_ephemeris_steps);
    set_environment_ptr( "EPHEM_STEPS", tbuff);
@@ -6217,6 +6863,7 @@ Shutdown_program:
    if( mpc_color_codes)
       free( mpc_color_codes);
    free( command_areas);
+   free( key_remaps);
    clean_up_find_orb_memory( );
    return( 0);
 }

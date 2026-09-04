@@ -44,10 +44,10 @@ idea for nearly-singular matrices.  */
       112 bits of precision.  Either is better than "ordinary" doubles
       with a mere 52 bits of precision.   */
 
-#if ((__GNUC__ * 100) + __GNUC_MINOR__) >= 406 && !defined( __arm__)
-#define ldouble    __float128
+#if ((__GNUC__ * 100) + __GNUC_MINOR__) >= 406 && !defined( __arm__) && !defined( __aarch64_)
+   #define ldouble    __float128
 #else
-#define ldouble    long double
+   #define ldouble    long double
 #endif
 
 #define LSQUARE struct lsquare
@@ -167,7 +167,7 @@ static ldouble pivot_value( const ldouble *line, const unsigned line_size)
    return( sum_squares ? square0 / sum_squares : 0.);
 }
 
-#define swap_ldoubles( a, b)   { const ldouble temp = a;  a = b;  b = temp; }
+#define swap_ldoubles( a, b)   { const ldouble __temp = a;  a = b;  b = __temp; }
 
 static ldouble *calc_inverse( const ldouble *src, const int size)
 {

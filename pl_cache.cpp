@@ -62,7 +62,7 @@ int generic_message_box( const char *message, const char *box_type);
 int compute_rough_planet_loc( const double t_cen, const int planet_idx,
                                           double *vect);    /* sm_vsop.cpp */
 int asteroid_position_raw( const int astnum, const double jd,
-                              double *posn);       /* bc405.cpp */
+                              double *posn, double *vel);      /* bc405.cpp */
 int64_t nanoseconds_since_1970( void);                      /* mpc_obs.c */
 int format_jpl_ephemeris_info( char *buff);                 /* pl_cache.c */
 
@@ -93,7 +93,9 @@ static int planet_posn_raw( int planet_no, const double jd,
       {
       double temp_loc[4];
 
-      rval = asteroid_position_raw( planet_no - bc405_start, jd, temp_loc);
+      rval = asteroid_position_raw( planet_no - bc405_start, jd,
+               (calc_vel ? NULL : temp_loc),
+               (calc_vel ? temp_loc : NULL));
       if( debug_level > 8)
          debug_printf( "JD %f, minor planet %d: (%f %f %f)\n",
                      jd, planet_no, temp_loc[0], temp_loc[1], temp_loc[2]);
@@ -472,9 +474,9 @@ int planet_posn( const int planet_no, const double jd, double *vect_2000)
          rval = planet_posn( 10 + vel_offset, jd, moon_loc);    /* lunar offset vect  */
       if( !rval)
          {
-         unsigned i;
+         size_t i;
          const double EARTH_MOON_BARYCENTER_FACTOR = 82.300679;
-         const double factor = (planet_no == PLANET_POSN_EARTH ?
+         const double factor = (planet_no % PLANET_POSN_VELOCITY_OFFSET == PLANET_POSN_EARTH ?
                      -1. / EARTH_MOON_BARYCENTER_FACTOR :
                  1. - 1. / EARTH_MOON_BARYCENTER_FACTOR);
 
@@ -619,15 +621,15 @@ int format_jpl_ephemeris_info( char *buff)
 {
    int de_version;
    double jd_start, jd_end;
+   const size_t buff_size = 250;
 
    get_jpl_ephemeris_info( &de_version, &jd_start, &jd_end);
    if( !de_version && !jd_start && !jd_end)
-      strcpy( buff, get_find_orb_text( 2056));
+      strlcpy_err( buff, get_find_orb_text( 2056), buff_size);
    else
-      sprintf( buff,
+      snprintf_err( buff, buff_size,
             "\nUsing %s; covers years %.1f to %.1f\n",
             jpl_get_ephem_name( jpl_eph),
-            (jd_start - J2000) / 365.25 + 2000.,
-            (jd_end   - J2000) / 365.25 + 2000.);
+            JD_TO_YEAR( jd_start), JD_TO_YEAR( jd_end));
    return( de_version);
 }
